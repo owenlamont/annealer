@@ -1,0 +1,25 @@
+indent-width = 2
+
+[lint.rules]
+anchors = "enable"
+document-start = "disable"
+key-duplicates = "enable"
+line-length = "disable"
+new-line-at-end-of-file = "enable"
+new-lines = "enable"
+trailing-spaces = "enable"
+truthy = "disable"
+unicode-line-breaks = "enable"
+
+[format]
+quote-style = "single"
+line-ending = "lf"
+indent-sequences = true
+brace-spacing = true
+comment-spacing = 2
+comment-starting-space = "add"
+document-start = "preserve"
+document-end = "preserve"
+fold-long-lines = false
+sequence-style = "preserve"
+mapping-style = "preserve"

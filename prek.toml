@@ -1,0 +1,84 @@
+[[repos]]
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v6.0.0"
+hooks = [
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  { id = "check-case-conflict" },
+  { id = "destroyed-symlinks" },
+  { id = "check-illegal-windows-names" },
+  { id = "check-merge-conflict" },
+  { id = "check-symlinks" },
+  { id = "check-toml" },
+  { id = "check-yaml" },
+  { id = "check-added-large-files" },
+  { id = "no-commit-to-branch", args = ["--branch", "main"] },
+  { id = "pretty-format-json", args = ["--autofix"] },
+  { id = "mixed-line-ending", args = ["--fix=lf"] },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "cargo-check",
+    name = "cargo check",
+    entry = "cargo check --locked --all-targets --all-features",
+    language = "system",
+    files = '(\.rs$|(^|/)(Cargo\.(toml|lock)|rust-toolchain\.toml)$)',
+    pass_filenames = false,
+    require_serial = true,
+  },
+  {
+    id = "cargo-fmt",
+    name = "cargo fmt",
+    entry = "cargo fmt --all -- --check",
+    language = "system",
+    files = '(\.rs$|(^|/)(Cargo\.toml|rustfmt\.toml|rust-toolchain\.toml)$)',
+    pass_filenames = false,
+  },
+  {
+    id = "clippy-enforce",
+    name = "cargo clippy (enforce warnings)",
+    entry = "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    language = "system",
+    files = '(\.rs$|(^|/)(Cargo\.(toml|lock)|clippy\.toml|rust-toolchain\.toml)$)',
+    pass_filenames = false,
+    require_serial = true,
+  },
+]
+
+[[repos]]
+repo = "https://github.com/rvben/rumdl-pre-commit"
+rev = "v0.3.0"
+hooks = [{ id = "rumdl" }]
+
+[[repos]]
+repo = "https://github.com/owenlamont/ryl-pre-commit"
+rev = "v0.28.0"
+hooks = [
+  { id = "ryl-check", args = ["--fix"] },
+  { id = "ryl-check-markdown", args = ["--fix"] },
+  { id = "ryl-format" },
+  { id = "ryl-format-markdown" },
+]
+
+[[repos]]
+repo = "https://github.com/adhtruong/mirrors-typos"
+rev = "v1.51.1"
+hooks = [{ id = "typos", args = ["--force-exclude"] }]
+
+[[repos]]
+repo = "https://github.com/woodruffw/zizmor-pre-commit"
+rev = "v1.31.1"
+hooks = [
+  {
+    id = "zizmor",
+    args = ["--min-severity", "low", "--min-confidence", "medium", "--fix=safe"],
+  },
+]
+
+[[repos]]
+repo = "https://github.com/rhysd/actionlint"
+rev = "v1.7.12"
+hooks = [{ id = "actionlint" }]
