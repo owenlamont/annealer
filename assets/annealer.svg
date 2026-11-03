@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" viewBox="0 0 512 512"
+     role="img" aria-labelledby="title desc">
+  <title id="title">Annealer</title>
+  <desc id="desc">Opposing blue flames point toward a metal A with orange heat near the edges.</desc>
+  <defs>
+    <path id="letter" fill-rule="evenodd" clip-rule="evenodd"
+          d="M218 70 H294 L424 434 H339 L315 364 H197 L173 434 H88Z
+             M256 168 L213 295 H299Z"/>
+    <clipPath id="letter-clip"><use href="#letter"/></clipPath>
+    <linearGradient id="metal" x1="150" y1="90" x2="360" y2="440"
+                    gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e3eef5"/>
+      <stop offset=".4" stop-color="#a7bacb"/>
+      <stop offset=".7" stop-color="#c5d2dd"/>
+      <stop offset="1" stop-color="#8fa6ba"/>
+    </linearGradient>
+    <linearGradient id="flame" x1="18" y1="286" x2="144" y2="286"
+                    gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1256da"/>
+      <stop offset=".5" stop-color="#168cff"/>
+      <stop offset="1" stop-color="#62eaff"/>
+    </linearGradient>
+    <linearGradient id="core" x1="18" y1="286" x2="139" y2="286"
+                    gradientUnits="userSpaceOnUse">
+      <stop stop-color="#45c9ff"/>
+      <stop offset="1" stop-color="#e5ffff"/>
+    </linearGradient>
+    <radialGradient id="heat-left" cx="141" cy="286" r="108"
+                    gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff791a"/>
+      <stop offset=".18" stop-color="#ff8c27" stop-opacity=".96"/>
+      <stop offset=".5" stop-color="#f9aa62" stop-opacity=".65"/>
+      <stop offset="1" stop-color="#f9aa62" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="heat-right" cx="371" cy="286" r="108"
+                    gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff791a"/>
+      <stop offset=".18" stop-color="#ff8c27" stop-opacity=".96"/>
+      <stop offset=".5" stop-color="#f9aa62" stop-opacity=".65"/>
+      <stop offset="1" stop-color="#f9aa62" stop-opacity="0"/>
+    </radialGradient>
+    <g id="jet" transform="translate(0 -71.5) scale(1 1.25)">
+      <path fill="url(#flame)" d="M18 264 L135 286 L18 308Z"/>
+      <path fill="url(#core)" d="M18 277 L131 286 L18 296Z"/>
+      <path fill="#f0ffff" d="M18 283 L126 286 L18 290Z"/>
+    </g>
+  </defs>
+  <use href="#letter" transform="translate(0 12)" fill="#263c51"/>
+  <use href="#jet"/>
+  <use href="#jet" transform="translate(512 0) scale(-1 1)"/>
+  <use href="#letter" fill="url(#metal)"/>
+  <path fill="#f3f8fc" opacity=".65"
+        d="M218 70 H294 L300 87 H230 L106 434 H88Z"/>
+  <g clip-path="url(#letter-clip)">
+    <rect width="512" height="512" fill="url(#heat-left)"/>
+    <rect width="512" height="512" fill="url(#heat-right)"/>
+  </g>
+</svg>
