@@ -10,3 +10,28 @@ repository = "https://github.com/owenlamont/annealer"
 categories = ["visualization", "development-tools"]
 keywords = ["git", "visualization", "history", "animation"]
 publish = false
+
+[dependencies]
+anyhow = "1"
+bevy = { version = "=0.20.1", default-features = false, features = [
+    "default_app",
+    "std",
+    "multi_threaded",
+    "bevy_winit",
+    "x11",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_post_process",
+    "bevy_ui_render",
+    "default_font",
+    "png",
+] }
+clap = { version = "4", features = ["derive"] }
+
+[profile.dev]
+debug = 0
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+tempfile = "3"

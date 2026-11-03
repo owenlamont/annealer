@@ -1,8 +1,8 @@
 # Annealer
 
 Private Git history visualisation experiment, intended for a later public release.
-The README describes goals, not implemented features. The current binary is a
-placeholder; keep Git import, rendering and export work in separately scoped issues.
+The README separates the rendering probe from future goals. Keep Git import,
+rendering and export work in separately scoped issues.
 
 ## Workflow
 
@@ -11,6 +11,9 @@ placeholder; keep Git import, rendering and export work in separately scoped iss
 - Keep publishing disabled until licensing and distribution are settled.
 - Use the installed engineering, Rust, docs and review skills as applicable.
 - Review a PR before requesting merge approval, including the adversarial round.
+- Stay near current stable Bevy releases; handle upgrades in feature branches.
+- Read [the rendering reference](docs/rendering.md) and matching tagged upstream
+  examples before changing Bevy code.
 
 ## Checks
 
@@ -18,13 +21,13 @@ placeholder; keep Git import, rendering and export work in separately scoped iss
 prek install --install-hooks --overwrite
 prek run --all-files
 cargo test --locked --all-targets
-cargo run --locked
+cargo run --locked -- --help
 ```
 
 Rust 1.99.1 is pinned with rustfmt and Clippy. Hook commands are shared with CI;
 Cargo configuration and toolchain changes must trigger the Rust checks too.
-Markdown prose wraps at 88 characters. The initial skeleton has no behavioural
-tests; add tests when there is behaviour worth checking.
+Markdown prose wraps at 88 characters. CPU tests run without a GPU; changes to the
+renderer also need a local export and visual inspection.
 
 ## Design constraints
 
@@ -32,3 +35,4 @@ Preserve file identity and spatial continuity across commits. Treat every commit
 as one coordinated event connecting a developer to all affected files. Keep the
 scene mostly planar with avatars above it. Drive export from explicit frame times,
 not wall-clock rendering speed. Prototype visual readability before expanding scope.
+Explore steady neon glow without strobing; visual effects must preserve readability.

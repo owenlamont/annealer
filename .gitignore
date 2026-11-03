@@ -1,4 +1,5 @@
 /target/
+/frames/
 /.idea/
 /.vscode/
 .DS_Store
