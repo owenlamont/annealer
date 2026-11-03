@@ -10,8 +10,9 @@ a structure gradually settling as changes reshape the repository.
 
 **Status: rendering feasibility probe.** A synthetic scene exercises document-like
 file tiles, two moving contributors, translucent connections, labels and diff
-fragments. Preview and numbered PNG export share the same scene updates. Git import
-and video encoding are not implemented. The repository remains private; licensing
+fragments. Preview and numbered PNG export share the same scene updates. Local Git
+history can be inspected as JSON independently of rendering; built-in video encoding
+is not implemented. The repository remains private; licensing
 and distribution are deferred, and Cargo publishing is disabled.
 
 ## Visual goal
@@ -36,8 +37,8 @@ Multiple visual styles are a later possibility; the probe does not implement the
 
 ## Prototype direction
 
-The probe uses Bevy 0.20.1. The next step is a short, scripted visual study before
-building Git ingestion or choosing the final architecture.
+The probe uses Bevy 0.20.1. A short, scripted visual study should guide the final
+playback architecture; local Git inspection runs independently of the renderer.
 
 Compare avatar motion, beam shapes, diff direction and layout continuity using a
 small synthetic history, including a deliberately crowded commit. The first study
@@ -46,6 +47,15 @@ should reveal whether the visual language remains readable in motion.
 PNG export uses explicit frame indices, with one outstanding capture at a time and
 confirmed writes before completion. The probe records logical state in `frames.csv`.
 Encode the PNGs with external FFmpeg; streaming raw frames remains future work.
+
+## Inspect local history
+
+```sh
+cargo run --locked -- inspect /path/to/repository --revision HEAD
+```
+
+See [local Git import](docs/git-import.md) for revision selection, event semantics
+and the reproducible fixture. Imported history is not yet connected to playback.
 
 ## Run the probe
 

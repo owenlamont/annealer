@@ -13,6 +13,7 @@
 )]
 
 mod export;
+mod history;
 mod model;
 mod scene;
 
@@ -21,7 +22,10 @@ use std::path::PathBuf;
 use clap::{CommandFactory, Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(version, about = "Annealer rendering feasibility probe")]
+#[command(
+    version,
+    about = "Git history inspection and rendering feasibility probe"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -29,6 +33,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Inspect local history as JSON; merge changes compare against the first parent.
+    Inspect {
+        repository: PathBuf,
+        #[arg(long, default_value = "HEAD")]
+        revision: String,
+    },
     Preview,
     Export {
         directory: PathBuf,
@@ -43,6 +53,13 @@ enum Command {
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
+        Some(Command::Inspect {
+            repository,
+            revision,
+        }) => {
+            let history = history::import(&repository, &revision)?;
+            serde_json::to_writer_pretty(std::io::stdout().lock(), &history)?;
+        }
         Some(Command::Preview) => scene::preview(),
         Some(Command::Export {
             directory,

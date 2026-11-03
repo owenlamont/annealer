@@ -1,0 +1,351 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::ControlFlow,
+    path::{Path, PathBuf},
+};
+
+use anyhow::{Context, bail};
+use gix::object::tree::diff::Change as TreeChange;
+use serde::Serialize;
+
+#[derive(Debug, thiserror::Error)]
+pub(super) enum Error {
+    #[error("open local repository {}", path.display())]
+    Open { path: PathBuf, source: gix::Error },
+    #[error("resolve revision {revision:?} to a commit")]
+    Revision {
+        revision: String,
+        source: gix::Error,
+    },
+    #[error("import reachable history at {tip}")]
+    History {
+        tip: gix::ObjectId,
+        source: anyhow::Error,
+    },
+}
+
+#[derive(Serialize)]
+pub(super) struct History {
+    tip: String,
+    merge_policy: &'static str,
+    rename_policy: &'static str,
+    diff_policy: &'static str,
+    commits: Vec<Commit>,
+}
+
+#[derive(Serialize)]
+struct Commit {
+    id: String,
+    parents: Vec<String>,
+    author: Identity,
+    committer: Identity,
+    message: Vec<u8>,
+    changes: Vec<Change>,
+}
+
+#[derive(Serialize)]
+struct Identity {
+    raw_signature: Vec<u8>,
+    name: Vec<u8>,
+    email: Vec<u8>,
+    seconds: i64,
+    offset_seconds: i32,
+}
+
+#[derive(Serialize)]
+struct Entry {
+    id: String,
+    mode: u16,
+}
+
+#[derive(Serialize)]
+struct Change {
+    path: Vec<u8>,
+    source_path: Option<Vec<u8>>,
+    kind: ChangeKind,
+    before: Option<Entry>,
+    after: Option<Entry>,
+    diff: BlobDiff,
+}
+
+#[derive(Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+enum ChangeKind {
+    Addition,
+    Deletion,
+    Modification,
+    RenameCandidate,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum BlobDiff {
+    Text {
+        insertions: u32,
+        removals: u32,
+        hunks: Vec<Hunk>,
+    },
+    Binary,
+    Gitlink,
+}
+
+#[derive(Serialize)]
+struct Hunk {
+    before_start: u32,
+    before_end: u32,
+    after_start: u32,
+    after_end: u32,
+}
+
+pub(super) fn import(path: &Path, revision: &str) -> Result<History, Error> {
+    let mut repo = gix::open(path).map_err(|source| Error::Open {
+        path: path.to_owned(),
+        source,
+    })?;
+    repo.object_cache_size(64 * 1024 * 1024);
+    let tip = repo
+        .rev_parse_single(revision)
+        .and_then(|id| id.object())
+        .and_then(gix::Object::peel_to_commit)
+        .map_err(|source| Error::Revision {
+            revision: revision.to_owned(),
+            source,
+        })?
+        .id;
+    load(&repo, tip).map_err(|source| Error::History { tip, source })
+}
+
+fn load(repo: &gix::Repository, tip: gix::ObjectId) -> anyhow::Result<History> {
+    let mut commits = BTreeMap::new();
+    let mut pending = vec![tip];
+    while let Some(id) = pending.pop() {
+        if commits.contains_key(&id) {
+            continue;
+        }
+        let commit = repo.find_commit(id).with_context(|| {
+            format!("read commit {id}; complete local history is required")
+        })?;
+        let parents: Vec<_> = commit.parent_ids().map(gix::Id::detach).collect();
+        pending.extend(&parents);
+        commits.insert(id, parents);
+    }
+    let mut children: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    let mut remaining = BTreeMap::new();
+    let mut ready = BTreeSet::new();
+    for (&id, parents) in &commits {
+        let unique: BTreeSet<_> = parents.iter().copied().collect();
+        remaining.insert(id, unique.len());
+        if unique.is_empty() {
+            ready.insert(id);
+        }
+        for parent in unique {
+            children.entry(parent).or_default().push(id);
+        }
+    }
+    let mut resources = repo.diff_resource_cache(
+        gix::diff::blob::pipeline::Mode::ToGit,
+        gix::diff::blob::pipeline::WorktreeRoots::default(),
+    )?;
+    let mut ordered = Vec::with_capacity(commits.len());
+    while let Some(id) = ready.pop_first() {
+        let commit = repo.find_commit(id)?;
+        let parents = &commits[&id];
+        let before = if let Some(parent) = parents.first() {
+            repo.find_commit(*parent)?.tree()?
+        } else {
+            repo.empty_tree()
+        };
+        let after = commit.tree()?;
+        let mut changes = Vec::new();
+        before
+            .changes()?
+            .options(|options| {
+                options
+                    .track_path()
+                    .track_rewrites(Some(gix::diff::Rewrites {
+                        copies: None,
+                        percentage: None,
+                        limit: 1000,
+                        track_empty: false,
+                    }));
+            })
+            .for_each_to_obtain_tree_with_cache(&after, &mut resources, |change| {
+                if let Some(record) = record(change) {
+                    changes.push(record);
+                }
+                Ok(ControlFlow::Continue(()))
+            })?;
+        resources.clear_resource_cache();
+        changes.sort_by(|a, b| {
+            (&a.path, &a.source_path, &a.kind).cmp(&(&b.path, &b.source_path, &b.kind))
+        });
+        for change in &mut changes {
+            change.diff = blob_diff(repo, change).with_context(|| {
+                format!("diff path {:?} in commit {id}", change.path)
+            })?;
+        }
+        let decoded = commit.decode()?;
+        ordered.push(Commit {
+            id: id.to_string(),
+            parents: parents.iter().map(ToString::to_string).collect(),
+            author: identity(decoded.author)?,
+            committer: identity(decoded.committer)?,
+            message: decoded.message.to_vec(),
+            changes,
+        });
+        for child in children.get(&id).into_iter().flatten() {
+            let count = remaining
+                .get_mut(child)
+                .context("reachable child has a parent count")?;
+            *count -= 1;
+            if *count == 0 {
+                ready.insert(*child);
+            }
+        }
+    }
+    if ordered.len() != commits.len() {
+        bail!("commit graph contains a cycle");
+    }
+    Ok(History {
+        tip: tip.to_string(),
+        merge_policy: "first-parent",
+        rename_policy: "exact-content-nonempty-no-copies",
+        diff_policy: "raw-blobs-histogram-nul-in-first-8000-bytes",
+        commits: ordered,
+    })
+}
+
+fn identity(raw: &[u8]) -> anyhow::Result<Identity> {
+    let signature = gix::actor::SignatureRef::from_bytes(raw)?;
+    let time = signature.time()?;
+    Ok(Identity {
+        raw_signature: raw.to_vec(),
+        name: signature.name.to_vec(),
+        email: signature.email.to_vec(),
+        seconds: time.seconds,
+        offset_seconds: time.offset,
+    })
+}
+
+fn entry(id: gix::Id<'_>, mode: gix::objs::tree::EntryMode) -> Entry {
+    Entry {
+        id: id.to_string(),
+        mode: mode.value(),
+    }
+}
+
+fn record(change: TreeChange<'_, '_, '_>) -> Option<Change> {
+    let (path, source_path, kind, before, after) = match change {
+        TreeChange::Addition {
+            location,
+            entry_mode,
+            id,
+            ..
+        } if !entry_mode.is_tree() => (
+            location.to_vec(),
+            None,
+            ChangeKind::Addition,
+            None,
+            Some(entry(id, entry_mode)),
+        ),
+        TreeChange::Deletion {
+            location,
+            entry_mode,
+            id,
+            ..
+        } if !entry_mode.is_tree() => (
+            location.to_vec(),
+            None,
+            ChangeKind::Deletion,
+            Some(entry(id, entry_mode)),
+            None,
+        ),
+        TreeChange::Modification {
+            location,
+            previous_entry_mode,
+            previous_id,
+            entry_mode,
+            id,
+        } if !entry_mode.is_tree() && !previous_entry_mode.is_tree() => (
+            location.to_vec(),
+            None,
+            ChangeKind::Modification,
+            Some(entry(previous_id, previous_entry_mode)),
+            Some(entry(id, entry_mode)),
+        ),
+        TreeChange::Rewrite {
+            source_location,
+            source_entry_mode,
+            source_id,
+            location,
+            entry_mode,
+            id,
+            ..
+        } if !entry_mode.is_tree() && !source_entry_mode.is_tree() => (
+            location.to_vec(),
+            Some(source_location.to_vec()),
+            ChangeKind::RenameCandidate,
+            Some(entry(source_id, source_entry_mode)),
+            Some(entry(id, entry_mode)),
+        ),
+        _ => return None,
+    };
+    Some(Change {
+        path,
+        source_path,
+        kind,
+        before,
+        after,
+        diff: BlobDiff::Gitlink,
+    })
+}
+
+fn blob_diff(repo: &gix::Repository, change: &Change) -> anyhow::Result<BlobDiff> {
+    if change
+        .before
+        .iter()
+        .chain(&change.after)
+        .any(|entry| entry.mode == 0o160_000)
+    {
+        return Ok(BlobDiff::Gitlink);
+    }
+    let load = |entry: &Option<Entry>| -> anyhow::Result<Vec<u8>> {
+        match entry {
+            Some(entry) => Ok(repo
+                .find_blob(gix::ObjectId::from_hex(entry.id.as_bytes())?)?
+                .data
+                .clone()),
+            None => Ok(Vec::new()),
+        }
+    };
+    let before = load(&change.before)?;
+    let after = load(&change.after)?;
+    if before
+        .iter()
+        .take(8000)
+        .chain(after.iter().take(8000))
+        .any(|&byte| byte == 0)
+    {
+        return Ok(BlobDiff::Binary);
+    }
+    let input =
+        gix::diff::blob::InternedInput::new(before.as_slice(), after.as_slice());
+    let diff = gix::diff::blob::diff_with_slider_heuristics(
+        gix::diff::blob::Algorithm::Histogram,
+        &input,
+    );
+    let hunks = diff
+        .hunks()
+        .map(|hunk| Hunk {
+            before_start: hunk.before.start,
+            before_end: hunk.before.end,
+            after_start: hunk.after.start,
+            after_end: hunk.after.end,
+        })
+        .collect();
+    Ok(BlobDiff::Text {
+        insertions: diff.count_additions(),
+        removals: diff.count_removals(),
+        hunks,
+    })
+}
