@@ -170,9 +170,7 @@ fn load(repo: &gix::Repository, tip: gix::ObjectId) -> anyhow::Result<History> {
                     }));
             })
             .for_each_to_obtain_tree_with_cache(&after, &mut resources, |change| {
-                if let Some(record) = record(change) {
-                    changes.push(record);
-                }
+                changes.extend(records(change).into_iter().flatten());
                 Ok(ControlFlow::Continue(()))
             })?;
         resources.clear_resource_cache();
@@ -231,6 +229,39 @@ fn entry(id: gix::Id<'_>, mode: gix::objs::tree::EntryMode) -> Entry {
     Entry {
         id: id.to_string(),
         mode: mode.value(),
+    }
+}
+
+fn records(change: TreeChange<'_, '_, '_>) -> [Option<Change>; 2] {
+    if let TreeChange::Rewrite {
+        source_location,
+        source_entry_mode,
+        source_relation,
+        source_id,
+        location,
+        entry_mode,
+        relation,
+        id,
+        ..
+    } = change
+        && source_id.is_empty_blob()
+    {
+        [
+            record(TreeChange::Deletion {
+                location: source_location,
+                entry_mode: source_entry_mode,
+                relation: source_relation,
+                id: source_id,
+            }),
+            record(TreeChange::Addition {
+                location,
+                entry_mode,
+                relation,
+                id,
+            }),
+        ]
+    } else {
+        [record(change), None]
     }
 }
 

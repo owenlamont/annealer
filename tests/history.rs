@@ -79,6 +79,7 @@ fn fixture(path: &Path) {
     fs::write(path.join("space name.txt"), b"raw\n").unwrap();
     fs::create_dir(path.join("folder")).unwrap();
     fs::write(path.join("folder/nested.txt"), b"nested\n").unwrap();
+    fs::write(path.join("folder/empty"), b"").unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
@@ -239,6 +240,9 @@ fn assert_history(path: &Path, commits: &[Value]) {
             .iter()
             .any(|change| change["diff"]["kind"] == "binary")
     );
+    assert!(changes.iter().all(|change| {
+        bytes(&change["path"]) != b"moved/empty" || change["kind"] == "addition"
+    }));
     assert!(
         changes
             .iter()
