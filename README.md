@@ -1,5 +1,7 @@
 # Annealer
 
+![Annealer logo](assets/annealer.svg)
+
 A Git history visualiser exploring how software takes shape over time.
 
 Annealer aims to retain Gource's moving developers and growing directory graph,
