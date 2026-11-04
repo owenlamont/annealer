@@ -64,7 +64,8 @@ features the probe does not implement yet.
 See [the rendering reference](docs/rendering.md) for versioned API sources, export
 checks and the Bevy upgrade procedure.
 
-See [the video export proof](docs/video-export.md) for a verified 10-second MP4 recipe.
+See [the video export issue](https://github.com/owenlamont/annealer/issues/9)
+for the verified 10-second MP4 proof and playback results.
 
 ## Development
 
