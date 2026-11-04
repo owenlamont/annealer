@@ -8,12 +8,12 @@ Annealer aims to retain Gource's moving developers and growing directory graph,
 adding restrained 3D depth and animated diff fragments. The annealing metaphor is
 a structure gradually settling as changes reshape the repository.
 
-**Status: rendering feasibility probe.** A synthetic scene exercises document-like
-file tiles, two moving contributors, translucent connections, labels and diff
-fragments. Preview and numbered PNG export share the same scene updates. Local Git
-history can be inspected as JSON independently of rendering; built-in video encoding
-is not implemented. The repository remains private; licensing
-and distribution are deferred, and Cargo publishing is disabled.
+**Status: layout study.** Playback lays out a local repository or a built-in synthetic
+history with persistent file positions, gliding contributors, coordinated commit
+beams, labels and diff fragments. Preview and numbered PNG export share one
+deterministic simulation. Built-in video encoding is not implemented. The repository
+remains private; licensing and distribution are deferred, and Cargo publishing is
+disabled.
 
 ## Visual goal
 
@@ -56,26 +56,28 @@ cargo run --locked -- inspect /path/to/repository --revision HEAD
 
 Inspection reads complete local working or bare repositories without modifying them.
 The experimental JSON contains parent-before-child commits, raw identities and paths,
-and first-parent file changes. Imported history is not yet connected to playback.
+and first-parent file changes.
 See [the Git import issue](https://github.com/owenlamont/annealer/issues/5)
 for implementation decisions and validation results.
 
 Create a deterministic 100-commit test repository with
 `uv run --script scripts/import_fixture.py NEW_REPOSITORY_DIRECTORY`.
 
-## Run the probe
+## Play history
 
 ```sh
-cargo run --locked -- --help
 cargo run --locked -- preview
-cargo run --locked -- export frames
+cargo run --locked --release -- preview --repository /path/to/repository
+cargo run --locked --release -- export frames --repository /path/to/repository \
+  --start 1000 --commits 200 --commit-seconds 0.1
 ```
 
-Preview loops four seconds; Escape closes the window. Export defaults to 120 frames
-at 30 fps and 1280×720. The output directory must not already exist. Use `--frames`,
-`--fps` and `--frame-delay-ms` to test export independently of rendering speed.
-The probe has fixed file positions and a fixed camera; the visual goal above includes
-features the probe does not implement yet.
+Without `--repository`, the synthetic history plays, including a move between
+directories, deletions and a 65-file commit. `--start` lays out and settles earlier
+commits before playback; `--commits` limits what plays after it. Preview loops;
+Escape closes the window. Export writes 1280×720 frames for the whole playback at
+30 fps unless `--frames` or `--fps` say otherwise. The output directory must not
+already exist. Commits touching more than 24 files aim beams at directories instead.
 
 Rendering changes also need the graphics export check and visual inspection:
 

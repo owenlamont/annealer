@@ -19,11 +19,10 @@ _FPS: Final = 30
 _HEADER: Final = [
     "frame",
     "seconds",
-    "avatar_x",
-    "avatar_y",
-    "avatar_z",
-    "created",
-    "deleted",
+    "commit",
+    "files",
+    "avatars",
+    "beams",
 ]
 
 

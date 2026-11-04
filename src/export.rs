@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context, bail};
 use bevy::{
     app::PluginsState,
-    prelude::{App, Handle, Image, On},
+    prelude::{App, Handle, Image, On, Text},
     render::{
         RenderApp,
         render_resource::{PipelineCache, PollType},
@@ -20,25 +20,26 @@ use bevy::{
     text::TextLayoutInfo,
 };
 
-use crate::{model, scene};
+use crate::{model::Simulation, scene};
 
 const WAIT_LIMIT: Duration = Duration::from_secs(30);
 
+pub(super) fn prepare(directory: &Path) -> anyhow::Result<()> {
+    fs::create_dir(directory)
+        .with_context(|| format!("create new export directory {}", directory.display()))
+}
+
 pub(super) fn run(
     directory: &Path,
-    frames: u16,
+    simulation: Simulation,
+    title: String,
+    frames: u32,
     fps: u16,
     delay_ms: u16,
 ) -> anyhow::Result<()> {
-    fs::create_dir(directory).with_context(|| {
-        format!("create new export directory {}", directory.display())
-    })?;
     let mut manifest = BufWriter::new(File::create(directory.join("frames.csv"))?);
-    writeln!(
-        manifest,
-        "frame,seconds,avatar_x,avatar_y,avatar_z,created,deleted"
-    )?;
-    let (mut app, target) = scene::headless(fps);
+    writeln!(manifest, "frame,seconds,commit,files,avatars,beams")?;
+    let (mut app, target) = scene::headless(simulation, title, fps);
     let started = Instant::now();
     while app.plugins_state() != PluginsState::Ready {
         if started.elapsed() > WAIT_LIMIT {
@@ -70,19 +71,22 @@ pub(super) fn run(
             .to_rgb8()
             .save(&path)
             .with_context(|| format!("write frame {}", path.display()))?;
-        let sample = model::sample(index, fps);
+        let playback = &app.world().resource::<scene::Playback>().0;
         writeln!(
             manifest,
-            "{index},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9}",
-            sample.seconds,
-            sample.avatar[0],
-            sample.avatar[1],
-            sample.avatar[2],
-            sample.created,
-            sample.deleted
+            "{index},{:.9},{},{},{},{}",
+            playback.seconds(),
+            playback.commit(),
+            playback.layout().present_files(),
+            playback
+                .avatars()
+                .iter()
+                .filter(|avatar| avatar.presence > 0.0)
+                .count(),
+            playback.beams().len()
         )?;
         thread::sleep(Duration::from_millis(u64::from(delay_ms)));
-        if index % fps == 0 || index + 1 == frames {
+        if index % u32::from(fps) == 0 || index + 1 == frames {
             eprintln!(
                 "Exported {}/{} frames ({:.1}s elapsed)",
                 index + 1,
@@ -98,10 +102,13 @@ pub(super) fn run(
 
 fn ready(app: &mut App) -> bool {
     let world = app.world_mut();
-    let mut query = world.query::<&TextLayoutInfo>();
-    let mut layouts = query.iter(world).peekable();
-    let labels_ready =
-        layouts.peek().is_some() && layouts.all(|layout| !layout.glyphs.is_empty());
+    let mut query = world.query::<(&Text, &TextLayoutInfo)>();
+    let mut layouts = query
+        .iter(world)
+        .filter(|(text, _)| !text.0.trim().is_empty())
+        .peekable();
+    let labels_ready = layouts.peek().is_some()
+        && layouts.all(|(_, layout)| !layout.glyphs.is_empty());
     labels_ready
         && app
             .sub_app(RenderApp)
@@ -112,7 +119,7 @@ fn ready(app: &mut App) -> bool {
             .is_none()
 }
 
-fn capture(app: &mut App, target: &Handle<Image>, frame: u16) -> anyhow::Result<Image> {
+fn capture(app: &mut App, target: &Handle<Image>, frame: u32) -> anyhow::Result<Image> {
     let (sender, receiver) = mpsc::channel();
     app.world_mut()
         .spawn(Screenshot::image(target.clone()))
