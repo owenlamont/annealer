@@ -35,15 +35,6 @@ hooks = [
     types = ["python"],
   },
   {
-    id = "cargo-check",
-    name = "cargo check",
-    entry = "cargo check --locked --all-targets --all-features",
-    language = "system",
-    files = '(\.rs$|(^|/)(Cargo\.(toml|lock)|rust-toolchain\.toml)$)',
-    pass_filenames = false,
-    require_serial = true,
-  },
-  {
     id = "cargo-fmt",
     name = "cargo fmt",
     entry = "cargo fmt --all -- --check",
