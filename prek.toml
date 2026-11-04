@@ -63,7 +63,7 @@ hooks = [
 
 [[repos]]
 repo = "https://github.com/rvben/rumdl-pre-commit"
-rev = "v0.3.0"
+rev = "v0.3.2"
 hooks = [{ id = "rumdl" }]
 
 [[repos]]
@@ -83,7 +83,7 @@ hooks = [{ id = "typos", args = ["--force-exclude"] }]
 
 [[repos]]
 repo = "https://github.com/woodruffw/zizmor-pre-commit"
-rev = "v1.31.1"
+rev = "v1.32.0"
 hooks = [
   {
     id = "zizmor",
