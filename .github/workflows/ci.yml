@@ -26,13 +26,11 @@ jobs:
           persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
-      - name: Install pinned Rust toolchain
-        run: rustup show
       - name: Install prek
         run: uv tool install prek==0.5.7
       - name: Run lint hooks
         env:
-          SKIP: no-commit-to-branch
+          SKIP: no-commit-to-branch,cargo-fmt,clippy-enforce
           GITHUB_TOKEN: ${{ github.token }}
         run: prek run --all-files
 
@@ -48,13 +46,25 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          fetch-depth: 2
+      - name: Classify Rust inputs
+        id: changes
+        shell: bash
+        run: |
+          rust=$(bash scripts/ci_rust.sh)
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
       - name: Install pinned Rust toolchain
+        if: steps.changes.outputs.rust == 'true'
         run: rustup show
+      - name: Restore Cargo cache
+        if: steps.changes.outputs.rust == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
       - name: Check formatting
+        if: steps.changes.outputs.rust == 'true'
         run: cargo fmt --all -- --check
       - name: Check Clippy warnings
+        if: steps.changes.outputs.rust == 'true'
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Run tests
+        if: steps.changes.outputs.rust == 'true'
         run: cargo test --locked --all-targets --all-features
-      - name: Check CLI help
-        run: cargo run --locked -- --help

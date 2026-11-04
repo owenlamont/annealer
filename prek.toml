@@ -21,6 +21,14 @@ hooks = [
 repo = "local"
 hooks = [
   {
+    id = "ci-policy",
+    name = "CI Rust input policy",
+    entry = "uv run --script tests/test_ci_rust.py",
+    language = "system",
+    files = '(^scripts/ci_rust\.sh$|^tests/test_ci_rust\.py$|^\.github/workflows/ci\.yml$)',
+    pass_filenames = false,
+  },
+  {
     id = "python-check",
     name = "Python lint",
     entry = "uvx ruff==0.17.3 check --target-version py315 --select E,F,I,UP,B,ANN",
@@ -35,15 +43,6 @@ hooks = [
     types = ["python"],
   },
   {
-    id = "cargo-check",
-    name = "cargo check",
-    entry = "cargo check --locked --all-targets --all-features",
-    language = "system",
-    files = '(\.rs$|(^|/)(Cargo\.(toml|lock)|rust-toolchain\.toml)$)',
-    pass_filenames = false,
-    require_serial = true,
-  },
-  {
     id = "cargo-fmt",
     name = "cargo fmt",
     entry = "cargo fmt --all -- --check",
@@ -56,7 +55,7 @@ hooks = [
     name = "cargo clippy (enforce warnings)",
     entry = "cargo clippy --locked --all-targets --all-features -- -D warnings",
     language = "system",
-    files = '(\.rs$|(^|/)(Cargo\.(toml|lock)|clippy\.toml|rust-toolchain\.toml)$)',
+    files = '(\.rs$|(^|/)(Cargo\.(toml|lock)|clippy\.toml|rust-toolchain\.toml)$|(^|/)\.cargo/config(\.toml)?$)',
     pass_filenames = false,
     require_serial = true,
   },
