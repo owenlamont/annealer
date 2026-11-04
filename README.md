@@ -70,6 +70,16 @@ cargo test --locked --test render_export -- --ignored
 See [the video export issue](https://github.com/owenlamont/annealer/issues/9)
 for the verified 10-second MP4 proof and playback results.
 
+To reproduce the proof, install uv and FFmpeg/ffprobe with the libx264 encoder:
+
+```sh
+cargo build --locked -j 2
+uv run --script scripts/video_proof.py target/debug/annealer video-proof
+```
+
+On Windows, use `target/debug/annealer.exe`. The output directory must be new.
+Run the script with `--help` for output retention and cleanup instructions.
+
 ## Development
 
 Rust 1.99.1, rustfmt and Clippy are pinned in `rust-toolchain.toml`.
