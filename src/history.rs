@@ -26,7 +26,7 @@ pub(super) enum Error {
 
 #[derive(Serialize)]
 pub(super) struct History {
-    tip: String,
+    pub(super) tip: String,
     merge_policy: &'static str,
     rename_policy: &'static str,
     diff_policy: &'static str,
@@ -35,8 +35,8 @@ pub(super) struct History {
 
 #[derive(Serialize)]
 pub(super) struct Commit {
-    id: String,
-    parents: Vec<String>,
+    pub(super) id: String,
+    pub(super) parents: Vec<String>,
     pub(super) author: Identity,
     committer: Identity,
     message: Vec<u8>,

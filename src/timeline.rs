@@ -1,4 +1,6 @@
-use crate::history::{BlobDiff, ChangeKind, History};
+use std::{collections::HashMap, fmt::Write};
+
+use crate::history::{BlobDiff, ChangeKind, Commit, History};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Kind {
@@ -23,10 +25,26 @@ pub(super) struct Event {
     pub changes: Vec<FileChange>,
 }
 
+/// Events along the first-parent chain, whose first-parent diffs transition each
+/// playback tree to the next; side-branch work arrives with the merge that brings it in.
 pub(super) fn from_history(history: &History) -> Vec<Event> {
-    history
+    let by_id: HashMap<&str, &Commit> = history
         .commits
         .iter()
+        .map(|commit| (commit.id.as_str(), commit))
+        .collect();
+    let mut chain = Vec::new();
+    let mut current = by_id.get(history.tip.as_str()).copied();
+    while let Some(commit) = current {
+        chain.push(commit);
+        current = commit
+            .parents
+            .first()
+            .and_then(|parent| by_id.get(parent.as_str()).copied());
+    }
+    chain
+        .into_iter()
+        .rev()
         .filter(|commit| !commit.changes.is_empty())
         .map(|commit| Event {
             author: String::from_utf8_lossy(&commit.author.name).into_owned(),
@@ -46,15 +64,15 @@ pub(super) fn from_history(history: &History) -> Vec<Event> {
                     let kind = match (&change.kind, &change.source_path) {
                         (ChangeKind::Addition, _) => Kind::Added,
                         (ChangeKind::Deletion, _) => Kind::Deleted,
-                        (ChangeKind::RenameCandidate, Some(from)) => Kind::Moved {
-                            from: String::from_utf8_lossy(from).into_owned(),
-                        },
+                        (ChangeKind::RenameCandidate, Some(from)) => {
+                            Kind::Moved { from: path(from) }
+                        }
                         (ChangeKind::Modification | ChangeKind::RenameCandidate, _) => {
                             Kind::Modified
                         }
                     };
                     FileChange {
-                        path: String::from_utf8_lossy(&change.path).into_owned(),
+                        path: path(&change.path),
                         kind,
                         insertions,
                         removals,
@@ -63,6 +81,25 @@ pub(super) fn from_history(history: &History) -> Vec<Event> {
                 .collect(),
         })
         .collect()
+}
+
+/// Decodes a raw Git path injectively: invalid UTF-8 bytes become `\xNN` and backslashes
+/// double, so distinct byte paths keep distinct identities.
+fn path(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len());
+    for chunk in bytes.utf8_chunks() {
+        for character in chunk.valid().chars() {
+            if character == '\\' {
+                text.push_str("\\\\");
+            } else {
+                text.push(character);
+            }
+        }
+        for byte in chunk.invalid() {
+            write!(text, "\\x{byte:02x}").expect("writing to a String cannot fail");
+        }
+    }
+    text
 }
 
 /// A small scripted history exercising growth, moves, deletion and a crowded commit.
@@ -173,5 +210,75 @@ fn change(path: &str, kind: Kind, insertions: u32, removals: u32) -> FileChange 
         kind,
         insertions,
         removals,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path, process::Command};
+
+    use super::*;
+
+    fn git(path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env(
+                "GIT_CONFIG_GLOBAL",
+                if cfg!(windows) { "NUL" } else { "/dev/null" },
+            )
+            .env("GIT_AUTHOR_NAME", "Author")
+            .env("GIT_AUTHOR_EMAIL", "author@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Author")
+            .env("GIT_COMMITTER_EMAIL", "author@example.invalid")
+            .output()
+            .expect("Git can start");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn merges_discarding_a_branch_leave_no_ghost_files() {
+        let scratch = tempfile::tempdir().expect("temporary directory is available");
+        let path = scratch.path();
+        git(path, &["init", "--initial-branch=main"]);
+        fs::write(path.join("kept.txt"), "kept\n").expect("fixture is writable");
+        git(path, &["add", "-A"]);
+        git(path, &["commit", "-m", "root"]);
+        git(path, &["checkout", "-b", "side"]);
+        fs::write(path.join("ghost.txt"), "side\n").expect("fixture is writable");
+        git(path, &["add", "-A"]);
+        git(path, &["commit", "-m", "side"]);
+        git(path, &["checkout", "main"]);
+        git(
+            path,
+            &["merge", "--no-ff", "-s", "ours", "side", "-m", "discard"],
+        );
+        let history = crate::history::import(path, "HEAD").expect("fixture imports");
+        let paths: Vec<_> = from_history(&history)
+            .into_iter()
+            .flat_map(|event| event.changes)
+            .map(|change| change.path)
+            .collect();
+        assert_eq!(paths, ["kept.txt"]);
+    }
+
+    #[test]
+    fn raw_paths_keep_distinct_identities() {
+        let decoded = [
+            path(b"\xff.txt"),
+            path(b"\xfe.txt"),
+            path(b"\\xff.txt"),
+            path("é.txt".as_bytes()),
+        ];
+        assert_eq!(decoded[0], "\\xff.txt");
+        assert_eq!(decoded[2], "\\\\xff.txt");
+        assert_eq!(decoded[3], "é.txt");
+        assert_ne!(decoded[0], decoded[1]);
     }
 }
