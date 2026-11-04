@@ -54,6 +54,8 @@ struct Caption;
 
 #[derive(Component)]
 struct FileVisual {
+    spine: Entity,
+    kind: usize,
     halo: Entity,
     author: Option<usize>,
 }
@@ -129,8 +131,8 @@ impl Palette {
         }
     }
 
-    fn spine(&self, extension: &str) -> Handle<StandardMaterial> {
-        let index = match extension {
+    fn spine_kind(extension: &str) -> usize {
+        match extension {
             "rs" | "c" | "cpp" | "h" | "go" => 0,
             "py" | "pyi" | "ipynb" => 1,
             "md" | "rst" | "txt" | "html" => 2,
@@ -138,8 +140,7 @@ impl Palette {
             "js" | "ts" | "tsx" | "jsx" | "mjs" => 4,
             "sh" | "ps1" | "nix" | "snap" => 5,
             _ => 6,
-        };
-        self.spines[index].clone()
+        }
     }
 }
 
@@ -354,10 +355,9 @@ fn sync_files(
         keep
     });
     for (id, file) in layout.files() {
-        let entity = *pools
-            .files
-            .entry(id)
-            .or_insert_with(|| spawn_file(world, palette, file.extension()));
+        let entity = *pools.files.entry(id).or_insert_with(|| {
+            spawn_file(world, palette, Palette::spine_kind(file.extension()))
+        });
         let position = Vec3::new(file.position.x, 0.0, file.position.y);
         if let Some(mut transform) = world.get_mut::<Transform>(entity) {
             transform.translation = position;
@@ -367,6 +367,17 @@ fn sync_files(
             .get::<FileVisual>(entity)
             .expect("file entities are visuals");
         let (halo, current) = (visual.halo, visual.author);
+        let kind = Palette::spine_kind(file.extension());
+        if visual.kind != kind {
+            let spine = visual.spine;
+            world
+                .entity_mut(spine)
+                .insert(MeshMaterial3d(palette.spines[kind].clone()));
+            world
+                .get_mut::<FileVisual>(entity)
+                .expect("file entities are visuals")
+                .kind = kind;
+        }
         let glowing = file.heat > 0.03;
         if glowing && current != Some(file.author) {
             world.entity_mut(halo).insert(MeshMaterial3d(
@@ -385,7 +396,7 @@ fn sync_files(
     }
 }
 
-fn spawn_file(world: &mut World, palette: &Palette, extension: &str) -> Entity {
+fn spawn_file(world: &mut World, palette: &Palette, kind: usize) -> Entity {
     let paper = block(
         world,
         &palette.cube,
@@ -396,7 +407,7 @@ fn spawn_file(world: &mut World, palette: &Palette, extension: &str) -> Entity {
     let spine = block(
         world,
         &palette.cube,
-        &palette.spine(extension),
+        &palette.spines[kind],
         Vec3::new(-0.19, 0.09, 0.0),
         Vec3::new(0.05, 0.02, 0.5),
     );
@@ -419,7 +430,12 @@ fn spawn_file(world: &mut World, palette: &Palette, extension: &str) -> Entity {
         .spawn((
             Transform::default(),
             Visibility::default(),
-            FileVisual { halo, author: None },
+            FileVisual {
+                spine,
+                kind,
+                halo,
+                author: None,
+            },
         ))
         .add_children(&[paper, spine, ink, halo])
         .id()

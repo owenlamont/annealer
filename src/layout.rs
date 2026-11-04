@@ -208,11 +208,11 @@ impl Layout {
             self.release(previous);
             self.files.remove(&previous);
         }
-        self.release(id);
         let dir = self.ensure_dir(parent_path(to));
         let slot = self.claim_slot(dir);
         self.dirs[dir].slots[slot] = Some(id);
         self.dirs[dir].files += 1;
+        self.release(id);
         let file = self.files.get_mut(&id).expect("indexed files exist");
         to.clone_into(&mut file.path);
         file.dir = dir;
@@ -480,6 +480,25 @@ mod tests {
         let file = layout.file(id).expect("renamed file exists");
         assert_eq!(file.path, "src/scene/layout.rs");
         assert!(file.position.distance(before) > 0.5, "file did not move");
+    }
+
+    #[test]
+    fn renaming_a_sole_file_keeps_its_directory_in_place() {
+        let mut layout = Layout::default();
+        let id = layout.add("docs/a.md", 0.0, 0);
+        for file in 0..40 {
+            layout.add(&format!("other/{file}.rs"), 0.0, 0);
+        }
+        layout.settle(600, DT);
+        let dir = layout.file(id).expect("added file exists").dir;
+        let before = layout.dir(dir).position;
+        layout.rename("docs/a.md", "docs/b.md", 0);
+        layout.step(DT);
+        assert_eq!(layout.file(id).expect("renamed file exists").dir, dir);
+        assert!(
+            layout.dir(dir).position.distance(before) < 0.05,
+            "directory jumped"
+        );
     }
 
     #[test]
