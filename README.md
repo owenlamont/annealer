@@ -115,3 +115,5 @@ a local GPU or software-renderer export and visual inspection.
 The lint setup follows [ryl](https://github.com/owenlamont/ryl): rustfmt, strict
 Clippy, Markdown and YAML checks, spelling, workflow linting and file hygiene.
 Changes go through feature branches and pull requests.
+
+CI policy control for documentation and the logo.
