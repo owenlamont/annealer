@@ -3,6 +3,8 @@
 Private Git history visualisation experiment, intended for a later public release.
 The README separates the rendering probe from future goals. Keep Git import,
 rendering and export work in separately scoped issues.
+Reserve `docs/` for user-facing documentation rendered to HTML; keep research and
+proof reports on issues.
 
 ## Workflow
 
@@ -12,8 +14,8 @@ rendering and export work in separately scoped issues.
 - Use the installed engineering, Rust, docs and review skills as applicable.
 - Review a PR before requesting merge approval, including the adversarial round.
 - Stay near current stable Bevy releases; handle upgrades in feature branches.
-- Read [the rendering reference](docs/rendering.md) and matching tagged upstream
-  examples before changing Bevy code.
+- Read the [historical rendering reference](https://github.com/owenlamont/annealer/issues/12#issuecomment-6628967300)
+  and upstream examples matching the current Bevy dependency before changing renderer code.
 
 ## Checks
 
