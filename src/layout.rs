@@ -228,6 +228,7 @@ impl Layout {
 
     pub(super) fn step(&mut self, dt: f32) {
         self.fade_files(dt);
+        self.prune_empty();
         self.relax(dt);
         let ease = 1.0 - (-FILE_EASE * dt).exp();
         for file in self.files.values_mut() {
@@ -314,7 +315,17 @@ impl Layout {
         while entry.slots.last() == Some(&None) {
             entry.slots.pop();
         }
-        self.prune(dir);
+    }
+
+    /// Retires empty directories once per step, never mid-mutation, so a directory
+    /// emptied and refilled within one commit keeps its place.
+    fn prune_empty(&mut self) {
+        for index in 1..self.dirs.len() {
+            let dir = &self.dirs[index];
+            if dir.live && dir.files == 0 && dir.children == 0 {
+                self.prune(index);
+            }
+        }
     }
 
     fn prune(&mut self, mut dir: usize) {
@@ -497,6 +508,28 @@ mod tests {
         assert_eq!(layout.file(id).expect("renamed file exists").dir, dir);
         assert!(
             layout.dir(dir).position.distance(before) < 0.05,
+            "directory jumped"
+        );
+    }
+
+    #[test]
+    fn renaming_onto_a_fading_file_keeps_its_directory_in_place() {
+        let mut layout = Layout::default();
+        layout.add("docs/a.md", 0.0, 0);
+        let id = layout.add("src/b.md", 0.0, 0);
+        for file in 0..40 {
+            layout.add(&format!("other/{file}.rs"), 0.0, 0);
+        }
+        layout.settle(600, DT);
+        layout.remove("docs/a.md", 0.6, 0);
+        layout.step(DT);
+        let docs = layout.dir_index["docs"];
+        let before = layout.dir(docs).position;
+        layout.rename("src/b.md", "docs/a.md", 0);
+        layout.step(DT);
+        assert_eq!(layout.file(id).expect("renamed file exists").dir, docs);
+        assert!(
+            layout.dir(docs).position.distance(before) < 0.05,
             "directory jumped"
         );
     }
