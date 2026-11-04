@@ -71,3 +71,4 @@ fn main() -> anyhow::Result<()> {
     }
     Ok(())
 }
+fn ci_format_control( ){}
