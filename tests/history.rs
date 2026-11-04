@@ -82,8 +82,12 @@ fn fixture(path: &Path) {
     fs::write(path.join("folder/empty"), b"").unwrap();
     #[cfg(unix)]
     {
-        use std::os::unix::ffi::OsStrExt;
         fs::write(path.join("tab\tname.txt"), b"raw\n").unwrap();
+    }
+    // The macOS runner's filesystem rejects non-UTF-8 filenames.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use std::os::unix::ffi::OsStrExt;
         fs::write(
             path.join(std::ffi::OsStr::from_bytes(b"nonutf8-\xff\n")),
             b"raw\n",
@@ -223,7 +227,7 @@ fn assert_history(path: &Path, commits: &[Value]) {
     }
     assert_eq!(seen, expected_ids);
     assert!(all_paths.contains(b"space name.txt".as_slice()));
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     assert!(all_paths.contains(b"nonutf8-\xff\n".as_slice()));
     let changes: Vec<_> = commits
         .iter()

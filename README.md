@@ -60,6 +60,9 @@ and first-parent file changes. Imported history is not yet connected to playback
 See [the Git import issue](https://github.com/owenlamont/annealer/issues/5)
 for implementation decisions and validation results.
 
+Create a deterministic 100-commit test repository with
+`uv run --script scripts/import_fixture.py NEW_REPOSITORY_DIRECTORY`.
+
 ## Run the probe
 
 ```sh

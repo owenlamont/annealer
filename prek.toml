@@ -21,6 +21,20 @@ hooks = [
 repo = "local"
 hooks = [
   {
+    id = "python-check",
+    name = "Python lint",
+    entry = "uvx ruff==0.17.3 check --target-version py315 --select E,F,I,UP,B,ANN",
+    language = "system",
+    types = ["python"],
+  },
+  {
+    id = "python-format",
+    name = "Python format",
+    entry = "uvx ruff==0.17.3 format --target-version py315 --check",
+    language = "system",
+    types = ["python"],
+  },
+  {
     id = "cargo-check",
     name = "cargo check",
     entry = "cargo check --locked --all-targets --all-features",
