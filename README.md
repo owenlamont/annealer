@@ -54,8 +54,11 @@ Encode the PNGs with external FFmpeg; streaming raw frames remains future work.
 cargo run --locked -- inspect /path/to/repository --revision HEAD
 ```
 
-See [local Git import](docs/git-import.md) for revision selection, event semantics
-and the reproducible fixture. Imported history is not yet connected to playback.
+Inspection reads complete local working or bare repositories without modifying them.
+The experimental JSON contains parent-before-child commits, raw identities and paths,
+and first-parent file changes. Imported history is not yet connected to playback.
+See [the Git import issue](https://github.com/owenlamont/annealer/issues/5)
+for implementation decisions and validation results.
 
 ## Run the probe
 
