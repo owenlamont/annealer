@@ -686,10 +686,10 @@ fn labels(world: &mut World) {
                     u16::try_from(label.text.chars().count()).unwrap_or(u16::MAX),
                 );
         let rect = Rect::from_corners(point, point + Vec2::new(width, 20.0));
-        if rect.max.x < 0.0
-            || rect.max.y < 0.0
-            || rect.min.x > 1280.0
-            || rect.min.y > 720.0
+        if rect.min.x < 0.0
+            || rect.min.y < 0.0
+            || rect.max.x > 1280.0
+            || rect.max.y > 720.0
             || placed.iter().any(|other| !other.intersect(rect).is_empty())
         {
             continue;

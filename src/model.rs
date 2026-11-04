@@ -196,7 +196,8 @@ impl Simulation {
             avatar.presence = (avatar.presence + fade).clamp(0.0, 1.0);
         }
         let (focus, distance) = state.fit();
-        let ease = 1.0 - (-dt / 0.8).exp();
+        let settle = if distance > state.distance { 0.3 } else { 1.5 };
+        let ease = 1.0 - (-dt / settle).exp();
         state.focus += (focus - state.focus) * ease;
         state.distance += (distance - state.distance) * ease;
     }
