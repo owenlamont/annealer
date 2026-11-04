@@ -61,8 +61,11 @@ at 30 fps and 1280×720. The output directory must not already exist. Use `--fra
 The probe has fixed file positions and a fixed camera; the visual goal above includes
 features the probe does not implement yet.
 
-See [the rendering reference](docs/rendering.md) for versioned API sources, export
-checks and the Bevy upgrade procedure.
+Rendering changes also need the graphics export check and visual inspection:
+
+```sh
+cargo test --locked --test render_export -- --ignored
+```
 
 ## Development
 
