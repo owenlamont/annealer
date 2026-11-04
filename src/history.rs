@@ -53,7 +53,7 @@ pub(super) struct Identity {
 }
 
 #[derive(Serialize)]
-pub(super) struct Entry {
+struct Entry {
     id: String,
     mode: u16,
 }

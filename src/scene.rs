@@ -709,11 +709,14 @@ fn labels(world: &mut World) {
             }
             node.left = px(point.x);
             node.top = px(point.y);
-            color.0 = if emphasis {
+            let wanted = if emphasis {
                 Color::srgb(0.88, 0.95, 1.0)
             } else {
                 Color::srgb(0.62, 0.86, 0.95)
             };
+            if color.0 != wanted {
+                color.0 = wanted;
+            }
             *visibility = Visibility::Inherited;
         } else {
             *visibility = Visibility::Hidden;
