@@ -129,4 +129,10 @@ The lint setup follows [ryl](https://github.com/owenlamont/ryl): rustfmt, strict
 Clippy, Markdown and YAML checks, spelling, workflow linting and file hygiene.
 Changes go through feature branches and pull requests.
 
-File icons: [Material Icon Theme](assets/material/README.md), MIT.
+## Acknowledgements
+
+- [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme)
+  (MIT) — file icons.
+- [Bevy](https://bevy.org/) — rendering and application framework.
+- [gix](https://github.com/GitoxideLabs/gitoxide) — Git history access.
+- [Gource](https://gource.io/) — inspiration for animated Git history.
