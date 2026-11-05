@@ -860,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_avatars_clear_file_tops_on_every_tick() {
+    fn synthetic_avatars_clear_file_tops_during_growth_and_rewind() {
         for start in [0, 8] {
             let mut sim = Simulation::new(
                 &timeline::synthetic(),
@@ -870,34 +870,12 @@ mod tests {
                 },
                 &Theme::neon(),
             );
-            for frame in 0..frames_for(sim.duration(), 60) {
-                sim.advance_to(frame, 60);
-                assert_clearance(&sim);
+            for _ in 0..2 {
+                for frame in 0..frames_for(sim.duration(), 60) {
+                    sim.advance_to(frame, 60);
+                    assert_clearance(&sim);
+                }
             }
-        }
-    }
-
-    #[test]
-    fn recorded_ryl_avatars_clear_file_tops_during_growth_and_rewind() {
-        let events: Vec<Event> = serde_json::from_str(include_str!(
-            "../tests/fixtures/ryl-08e9305-start.json"
-        ))
-        .expect("recorded ryl timeline is valid");
-        for start in [0, 6] {
-            let mut sim = Simulation::new(
-                &events,
-                &Options {
-                    start,
-                    ..Options::default()
-                },
-                &Theme::neon(),
-            );
-            for frame in 0..frames_for(sim.duration(), 30) {
-                sim.advance_to(frame, 30);
-                assert_clearance(&sim);
-            }
-            sim.advance_to(10, 2);
-            assert_clearance(&sim);
         }
     }
 

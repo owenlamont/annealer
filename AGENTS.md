@@ -19,6 +19,8 @@ proof reports on issues.
 
 ## Checks
 
+Keep fixtures small and readable; build inline instead of committing recorded history.
+
 ```sh
 prek install --install-hooks --overwrite
 prek run --all-files
