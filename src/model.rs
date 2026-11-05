@@ -7,6 +7,7 @@ use bevy::math::{Vec2, Vec3};
 
 use crate::{
     layout::Layout,
+    theme::{Geometry, Theme},
     timeline::{Event, Kind},
 };
 
@@ -17,7 +18,8 @@ const TAIL: f32 = 2.5;
 const PULSE_SECONDS: f32 = 1.3;
 const ADD_DELAY: f32 = 0.2;
 const DELETE_DELAY: f32 = 0.6;
-const AVATAR_HEIGHT: f32 = 3.2;
+const MIN_AVATAR_HEIGHT: f32 = 3.2;
+const AVATAR_CLEARANCE: f32 = 0.04;
 const AVATAR_IDLE: f32 = 5.0;
 const BEAM_LIMIT: usize = 24;
 const FRAGMENT_TARGETS: usize = 24;
@@ -102,6 +104,7 @@ struct State {
     pulses: VecDeque<Pulse>,
     focus: Vec3,
     distance: f32,
+    geometry: Geometry,
 }
 
 /// Deterministic playback stepped at a fixed tick rate, independent of output frame rate.
@@ -112,10 +115,11 @@ pub(super) struct Simulation {
     commit_seconds: f32,
     initial: State,
     state: State,
+    theme: Theme,
 }
 
 impl Simulation {
-    pub(super) fn new(events: &[Event], options: &Options) -> Self {
+    pub(super) fn new(events: &[Event], options: &Options, theme: &Theme) -> Self {
         let start = options.start.min(events.len());
         let end = options
             .commits
@@ -129,6 +133,7 @@ impl Simulation {
             pulses: VecDeque::new(),
             focus: Vec3::ZERO,
             distance: 12.0,
+            geometry: theme.geometry(),
         };
         for event in &events[..start] {
             let author = state.author(&event.author, 0.0);
@@ -149,6 +154,7 @@ impl Simulation {
             commit_seconds: options.commit_seconds,
             initial: state.clone(),
             state,
+            theme: theme.clone(),
         }
     }
 
@@ -190,16 +196,17 @@ impl Simulation {
             let acceleration = (avatar.target - avatar.position) * omega * omega
                 - avatar.velocity * 2.0 * omega;
             avatar.velocity += acceleration * dt;
+            avatar.velocity.y = 0.0;
             avatar.position += avatar.velocity * dt;
             let visible = now - avatar.last_active < AVATAR_IDLE;
             let fade = if visible { dt / 0.4 } else { -dt / 1.2 };
             avatar.presence = (avatar.presence + fade).clamp(0.0, 1.0);
         }
-        let (focus, distance) = state.fit();
-        let settle = if distance > state.distance { 0.3 } else { 1.5 };
-        let ease = 1.0 - (-dt / settle).exp();
-        state.focus += (focus - state.focus) * ease;
-        state.distance += (distance - state.distance) * ease;
+        state.place_view(dt);
+    }
+
+    pub(super) fn theme(&self) -> &Theme {
+        &self.theme
     }
 
     pub(super) fn layout(&self) -> &Layout {
@@ -345,7 +352,7 @@ impl Simulation {
         for avatar in &self.state.avatars {
             if avatar.presence > 0.05 {
                 labels.push(Label {
-                    position: avatar.position + Vec3::new(0.3, 0.3, 0.0),
+                    position: avatar.position + self.state.geometry.avatar_label_offset,
                     text: avatar.name.clone(),
                     kind: LabelKind::Avatar,
                 });
@@ -363,9 +370,9 @@ impl State {
         let index = self.avatars.len();
         self.avatars.push(Avatar {
             name: name.to_owned(),
-            position: self.focus() + Vec3::Y * (self.height() + 2.0),
+            position: self.focus() + Vec3::Y * MIN_AVATAR_HEIGHT,
             velocity: Vec3::ZERO,
-            target: self.focus() + Vec3::Y * self.height(),
+            target: self.focus(),
             last_active: now,
             presence: 0.0,
         });
@@ -394,7 +401,6 @@ impl State {
             .iter()
             .filter_map(|&(target, ..)| self.destination(target))
             .fold((Vec2::ZERO, 0.0), |(sum, n), point| (sum + point, n + 1.0));
-        let height = self.height();
         for pulse in &mut self.pulses {
             if pulse.author == author {
                 pulse.end = pulse.end.min(start + 0.3);
@@ -402,10 +408,10 @@ impl State {
         }
         let avatar = &mut self.avatars[author];
         if centroid.1 > 0.0 {
-            avatar.target = ground(centroid.0 / centroid.1) + Vec3::Y * height;
+            avatar.target = ground(centroid.0 / centroid.1);
         }
         if avatar.presence <= 0.0 {
-            avatar.position = avatar.target + Vec3::Y * 2.0;
+            avatar.position = avatar.target + Vec3::Y * MIN_AVATAR_HEIGHT;
             avatar.velocity = Vec3::ZERO;
         }
         avatar.last_active = start;
@@ -481,10 +487,24 @@ impl State {
         1.0 + self.distance / 60.0
     }
 
-    /// The camera distance that keeps every directory disc and the avatar plane in view.
-    fn fit(&self) -> (Vec3, f32) {
-        let (low, high) = self.layout.bounds();
-        let mut focus = ground((low + high) * 0.5);
+    fn file_tops(&self) -> Vec<Vec3> {
+        self.layout
+            .files()
+            .flat_map(|(_, file)| {
+                let low = self.geometry.file_min * file.presence.max(0.001);
+                let high = self.geometry.file_max * file.presence.max(0.001);
+                [
+                    Vec3::new(low.x, high.y, low.z),
+                    Vec3::new(low.x, high.y, high.z),
+                    Vec3::new(high.x, high.y, low.z),
+                    high,
+                ]
+                .map(|corner| ground(file.position) + corner)
+            })
+            .collect()
+    }
+
+    fn scene_points(&self, tops: &[Vec3]) -> Vec<Vec3> {
         let mut points: Vec<Vec3> = self
             .layout
             .dirs()
@@ -495,27 +515,125 @@ impl State {
                     .map(|side| centre + side * radius)
             })
             .collect();
-        let lift = Vec3::Y * self.height() * 1.3;
+        points.extend_from_slice(tops);
+        points
+    }
+
+    fn fit(&self) -> (Vec3, f32) {
+        let (low, high) = self.layout.bounds();
+        let mut focus = ground((low + high) * 0.5);
+        let tops = self.file_tops();
+        let points = self.scene_points(&tops);
         let direction = view_direction();
         let ground_up = Vec3::new(-direction.x, 0.0, -direction.z).normalize();
         let ground_right = ground_up.cross(Vec3::Y);
         for _ in 0..4 {
-            points.push(focus + lift);
-            let distance = fit_distance(focus, &points);
-            let (low, high) =
-                screen_bounds(focus + direction * distance, focus, &points);
-            points.pop();
+            let distance = self.fit_distance(focus, &points, &tops);
+            let lifted = self.lifted_points(focus, distance, &tops);
+            let all: Vec<_> = points.iter().chain(&lifted).copied().collect();
+            let (low, high) = screen_bounds(focus + direction * distance, focus, &all);
             let centre = (low + high) * 0.5 - Vec2::new(0.0, -0.04);
             let span = distance * (std::f32::consts::FRAC_PI_8).tan();
             focus += ground_right * centre.x * span * 16.0 / 9.0
                 + ground_up * centre.y * span * 1.2;
         }
-        points.push(focus + lift);
-        (focus, fit_distance(focus, &points))
+        (focus, self.fit_distance(focus, &points, &tops))
     }
 
-    fn height(&self) -> f32 {
-        avatar_height(self.scale())
+    fn fit_distance(&self, focus: Vec3, points: &[Vec3], tops: &[Vec3]) -> f32 {
+        let direction = view_direction();
+        let (mut near, mut far) = (2.0_f32, 20_000.0_f32);
+        for _ in 0..32 {
+            let middle = f32::midpoint(near, far);
+            let mut all = self.lifted_points(focus, middle, tops);
+            all.extend_from_slice(points);
+            if in_view(focus + direction * middle, focus, &all) {
+                far = middle;
+            } else {
+                near = middle;
+            }
+        }
+        far
+    }
+
+    fn lifted_points(&self, focus: Vec3, distance: f32, tops: &[Vec3]) -> Vec<Vec3> {
+        let eye = focus + view_direction() * distance;
+        let line =
+            screen_bounds(eye, focus, tops).1.y.max(-0.8) + 2.0 * AVATAR_CLEARANCE;
+        let scale = 1.0 + distance / 60.0;
+        self.avatars
+            .iter()
+            .filter(|avatar| avatar.presence > 0.0)
+            .flat_map(|avatar| {
+                let height = self.lift(avatar, focus, distance, line);
+                let position = Vec3::new(avatar.position.x, height, avatar.position.z);
+                let mut points = box_corners(
+                    Vec3::splat(-self.geometry.avatar_radius * scale),
+                    Vec3::splat(self.geometry.avatar_radius * scale),
+                )
+                .map(|corner| position + corner)
+                .to_vec();
+                let label = position + self.geometry.avatar_label_offset;
+                points.push(label);
+                points
+            })
+            .collect()
+    }
+
+    fn lift(&self, avatar: &Avatar, focus: Vec3, distance: f32, line: f32) -> f32 {
+        let eye = focus + view_direction() * distance;
+        let forward = -view_direction();
+        let up = forward.cross(Vec3::Y).normalize().cross(forward);
+        let radius = self.geometry.avatar_radius * (1.0 + distance / 60.0);
+        let base = Vec3::new(avatar.position.x, 0.0, avatar.position.z);
+        let solve = |offset: Vec3, target: f32| {
+            let slope = target * std::f32::consts::FRAC_PI_8.tan();
+            let delta = base + offset - eye;
+            (slope * delta.dot(forward) - delta.dot(up)) / (up.y - slope * forward.y)
+        };
+        let height = box_corners(Vec3::splat(-radius), Vec3::splat(radius))
+            .into_iter()
+            .map(|corner| solve(corner, line))
+            .fold(MIN_AVATAR_HEIGHT, f32::max)
+            .max(solve(
+                self.geometry.avatar_label_offset,
+                line + 2.0 * self.geometry.label_height / 720.0,
+            ));
+        // Immediate upward correction preserves clearance while downward easing avoids bobbing.
+        height.max(
+            avatar.position.y
+                + (height - avatar.position.y) * (1.0 - (-tick_seconds() / 1.5).exp()),
+        ) + 0.0001
+    }
+
+    fn place_view(&mut self, dt: f32) {
+        let (focus, distance) = self.fit();
+        let settle = if distance > self.distance { 0.3 } else { 1.5 };
+        let ease = 1.0 - (-dt / settle).exp();
+        self.focus += (focus - self.focus) * ease;
+        self.distance += (distance - self.distance) * ease;
+        let tops = self.file_tops();
+        let points = self.scene_points(&tops);
+        self.distance = self
+            .distance
+            .max(self.fit_distance(self.focus, &points, &tops));
+        let line = screen_bounds(
+            self.focus + view_direction() * self.distance,
+            self.focus,
+            &tops,
+        )
+        .1
+        .y
+        .max(-0.8)
+            + 2.0 * AVATAR_CLEARANCE;
+        let heights: Vec<_> = self
+            .avatars
+            .iter()
+            .map(|avatar| self.lift(avatar, self.focus, self.distance, line))
+            .collect();
+        for (avatar, height) in self.avatars.iter_mut().zip(heights) {
+            avatar.position.y = height;
+        }
     }
 }
 
@@ -535,21 +653,20 @@ fn apply(
 }
 
 pub(super) fn view_direction() -> Vec3 {
-    Vec3::new(0.4, 0.78, 0.95).normalize()
+    Vec3::new(0.4, 0.44, 0.95).normalize()
 }
 
-fn fit_distance(focus: Vec3, points: &[Vec3]) -> f32 {
-    let direction = view_direction();
-    let (mut near, mut far) = (2.0_f32, 20_000.0_f32);
-    for _ in 0..32 {
-        let middle = f32::midpoint(near, far);
-        if in_view(focus + direction * middle, focus, points) {
-            far = middle;
-        } else {
-            near = middle;
-        }
-    }
-    far
+fn box_corners(low: Vec3, high: Vec3) -> [Vec3; 8] {
+    [
+        low,
+        Vec3::new(low.x, low.y, high.z),
+        Vec3::new(low.x, high.y, low.z),
+        Vec3::new(low.x, high.y, high.z),
+        Vec3::new(high.x, low.y, low.z),
+        Vec3::new(high.x, low.y, high.z),
+        Vec3::new(high.x, high.y, low.z),
+        high,
+    ]
 }
 
 /// Projects points to normalised screen coordinates, or `None` for one behind the eye.
@@ -588,10 +705,6 @@ fn screen_bounds(eye: Vec3, focus: Vec3, points: &[Vec3]) -> (Vec2, Vec2) {
         (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)),
         |(low, high), point| (low.min(point), high.max(point)),
     )
-}
-
-pub(super) fn avatar_height(scale: f32) -> f32 {
-    AVATAR_HEIGHT * scale
 }
 
 /// Up to three pieces per direction, descending along the beam or rising from the file.
@@ -698,7 +811,145 @@ mod tests {
     use crate::timeline;
 
     fn simulation() -> Simulation {
-        Simulation::new(&timeline::synthetic(), &Options::default())
+        Simulation::new(&timeline::synthetic(), &Options::default(), &Theme::neon())
+    }
+
+    fn assert_clearance(sim: &Simulation) {
+        let state = &sim.state;
+        let eye = state.focus + view_direction() * state.distance;
+        let tops = state.file_tops();
+        let highest = screen_bounds(eye, state.focus, &tops).1.y;
+        for avatar in state.avatars.iter().filter(|avatar| avatar.presence > 0.0) {
+            let radius = state.geometry.avatar_radius * sim.scale();
+            let corners = box_corners(Vec3::splat(-radius), Vec3::splat(radius))
+                .map(|corner| avatar.position + corner);
+            let projected: Vec<_> = project(eye, state.focus, &corners)
+                .map(|point| point.expect("avatar bounds are in front of the camera"))
+                .collect();
+            let lowest = projected
+                .iter()
+                .map(|point| point.y)
+                .fold(f32::MAX, f32::min);
+            assert!(
+                lowest > highest + 2.0 * AVATAR_CLEARANCE,
+                "tick {}: avatar {lowest}, file {highest}, distance {}",
+                state.tick,
+                state.distance
+            );
+            assert!(
+                projected.iter().all(|point| point.x.abs() <= 0.9201
+                    && (-0.8001..=0.7201).contains(&point.y)),
+                "tick {}: avatar outside fit margins: {projected:?}",
+                state.tick
+            );
+            let label = [avatar.position + state.geometry.avatar_label_offset];
+            let label = project(eye, state.focus, &label)
+                .next()
+                .flatten()
+                .expect("label is in front of the camera");
+            assert!(
+                label.y - 2.0 * state.geometry.label_height / 720.0
+                    > highest + 2.0 * AVATAR_CLEARANCE
+            );
+            assert!(avatar.position.y >= MIN_AVATAR_HEIGHT);
+        }
+        assert!(
+            project(eye, state.focus, &tops).all(|point| point.is_some()),
+            "files are in front of the camera"
+        );
+    }
+
+    #[test]
+    fn synthetic_avatars_clear_file_tops_on_every_tick() {
+        for start in [0, 8] {
+            let mut sim = Simulation::new(
+                &timeline::synthetic(),
+                &Options {
+                    start,
+                    ..Options::default()
+                },
+                &Theme::neon(),
+            );
+            for frame in 0..frames_for(sim.duration(), 60) {
+                sim.advance_to(frame, 60);
+                assert_clearance(&sim);
+            }
+        }
+    }
+
+    #[test]
+    fn recorded_ryl_avatars_clear_file_tops_during_growth_and_rewind() {
+        let events: Vec<Event> = serde_json::from_str(include_str!(
+            "../tests/fixtures/ryl-08e9305-start.json"
+        ))
+        .expect("recorded ryl timeline is valid");
+        for start in [0, 6] {
+            let mut sim = Simulation::new(
+                &events,
+                &Options {
+                    start,
+                    ..Options::default()
+                },
+                &Theme::neon(),
+            );
+            for frame in 0..frames_for(sim.duration(), 30) {
+                sim.advance_to(frame, 30);
+                assert_clearance(&sim);
+            }
+            sim.advance_to(10, 2);
+            assert_clearance(&sim);
+        }
+    }
+
+    #[test]
+    fn projection_check_rejects_fixed_height() {
+        let mut sim = simulation();
+        sim.advance_to(13, 2);
+        assert_clearance(&sim);
+        let state = &sim.state;
+        let eye = state.focus + view_direction() * state.distance;
+        let highest = screen_bounds(eye, state.focus, &state.file_tops()).1.y;
+        let points: Vec<_> = state
+            .avatars
+            .iter()
+            .map(|avatar| {
+                Vec3::new(avatar.position.x, MIN_AVATAR_HEIGHT, avatar.position.z)
+            })
+            .collect();
+        let lowest = screen_bounds(eye, state.focus, &points).0.y;
+        assert!(lowest < highest + 2.0 * AVATAR_CLEARANCE);
+    }
+
+    #[test]
+    fn lift_and_fit_settle_without_camera_drift() {
+        let mut sim = simulation();
+        sim.advance_to(13, 2);
+        sim.state.layout.settle(SETTLE_TICKS, tick_seconds());
+        for _ in 0..600 {
+            sim.state.place_view(tick_seconds());
+        }
+        let (focus, distance) = sim.view();
+        for _ in 0..120 {
+            sim.state.place_view(tick_seconds());
+            assert_clearance(&sim);
+        }
+        assert!((sim.view().0 - focus).length() < 0.01);
+        assert!((sim.view().1 - distance).abs() < 0.01);
+    }
+
+    #[test]
+    fn clearance_uses_themes_tile_and_avatar_dimensions() {
+        let mut theme = Theme::neon();
+        theme.file_frame_position.y = 0.4;
+        theme.file_frame_scale *= 2.0;
+        theme.avatar_radius = 0.5;
+        theme.label_height = 28.0;
+        let mut sim =
+            Simulation::new(&timeline::synthetic(), &Options::default(), &theme);
+        for frame in 0..frames_for(sim.duration(), 30) {
+            sim.advance_to(frame, 30);
+            assert_clearance(&sim);
+        }
     }
 
     #[test]
@@ -759,7 +1010,7 @@ mod tests {
             commits: Some(2),
             ..Options::default()
         };
-        let sim = Simulation::new(&timeline::synthetic(), &options);
+        let sim = Simulation::new(&timeline::synthetic(), &options, &Theme::neon());
         assert_eq!(sim.commit(), 8);
         assert!(sim.layout().present_files() > 60);
         assert!(sim.layout().files().all(|(_, file)| file.presence >= 1.0));

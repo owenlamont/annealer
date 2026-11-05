@@ -1,0 +1,794 @@
+[
+  {
+    "author": "Owen Lamont",
+    "changes": [
+      {
+        "insertions": 21,
+        "kind": "Added",
+        "path": ".gitignore",
+        "removals": 0
+      },
+      {
+        "insertions": 21,
+        "kind": "Added",
+        "path": "LICENSE",
+        "removals": 0
+      },
+      {
+        "insertions": 2,
+        "kind": "Added",
+        "path": "README.md",
+        "removals": 0
+      }
+    ],
+    "seconds": 1755606873
+  },
+  {
+    "author": "Owen Lamont",
+    "changes": [
+      {
+        "insertions": 1,
+        "kind": "Added",
+        "path": ".github/CODEOWNERS",
+        "removals": 0
+      },
+      {
+        "insertions": 11,
+        "kind": "Added",
+        "path": ".github/dependabot.yml",
+        "removals": 0
+      },
+      {
+        "insertions": 32,
+        "kind": "Added",
+        "path": ".github/workflows/pre-commit.yml",
+        "removals": 0
+      },
+      {
+        "insertions": 174,
+        "kind": "Added",
+        "path": ".github/workflows/release.yml",
+        "removals": 0
+      },
+      {
+        "insertions": 60,
+        "kind": "Added",
+        "path": ".github/workflows/update_dependencies.yml",
+        "removals": 0
+      },
+      {
+        "insertions": 55,
+        "kind": "Added",
+        "path": ".github/workflows/update_linters.yml",
+        "removals": 0
+      },
+      {
+        "insertions": 10,
+        "kind": "Modified",
+        "path": ".gitignore",
+        "removals": 5
+      },
+      {
+        "insertions": 70,
+        "kind": "Added",
+        "path": ".pre-commit-config.yaml",
+        "removals": 0
+      },
+      {
+        "insertions": 53,
+        "kind": "Added",
+        "path": "AGENTS.md",
+        "removals": 0
+      },
+      {
+        "insertions": 470,
+        "kind": "Added",
+        "path": "Cargo.lock",
+        "removals": 0
+      },
+      {
+        "insertions": 20,
+        "kind": "Added",
+        "path": "Cargo.toml",
+        "removals": 0
+      },
+      {
+        "insertions": 1,
+        "kind": "Modified",
+        "path": "README.md",
+        "removals": 0
+      },
+      {
+        "insertions": 45,
+        "kind": "Added",
+        "path": "pyproject.toml",
+        "removals": 0
+      },
+      {
+        "insertions": 21,
+        "kind": "Added",
+        "path": "rumdl.toml",
+        "removals": 0
+      },
+      {
+        "insertions": 2,
+        "kind": "Added",
+        "path": "rust-toolchain.toml",
+        "removals": 0
+      },
+      {
+        "insertions": 2,
+        "kind": "Added",
+        "path": "rustfmt.toml",
+        "removals": 0
+      },
+      {
+        "insertions": 3,
+        "kind": "Added",
+        "path": "src/main.rs",
+        "removals": 0
+      }
+    ],
+    "seconds": 1756641616
+  },
+  {
+    "author": "create-pr-workflow-auth[bot]",
+    "changes": [
+      {
+        "insertions": 2,
+        "kind": "Modified",
+        "path": ".pre-commit-config.yaml",
+        "removals": 2
+      }
+    ],
+    "seconds": 1757238878
+  },
+  {
+    "author": "dependabot[bot]",
+    "changes": [
+      {
+        "insertions": 2,
+        "kind": "Modified",
+        "path": ".github/workflows/pre-commit.yml",
+        "removals": 2
+      },
+      {
+        "insertions": 2,
+        "kind": "Modified",
+        "path": ".github/workflows/release.yml",
+        "removals": 2
+      },
+      {
+        "insertions": 1,
+        "kind": "Modified",
+        "path": ".github/workflows/update_linters.yml",
+        "removals": 1
+      }
+    ],
+    "seconds": 1757239462
+  },
+  {
+    "author": "Owen Lamont",
+    "changes": [
+      {
+        "insertions": 6,
+        "kind": "Modified",
+        "path": ".github/workflows/pre-commit.yml",
+        "removals": 6
+      },
+      {
+        "insertions": 5,
+        "kind": "Modified",
+        "path": ".github/workflows/update_linters.yml",
+        "removals": 5
+      },
+      {
+        "insertions": 5,
+        "kind": "Modified",
+        "path": ".pre-commit-config.yaml",
+        "removals": 0
+      },
+      {
+        "insertions": 2,
+        "kind": "Modified",
+        "path": "AGENTS.md",
+        "removals": 2
+      },
+      {
+        "insertions": 113,
+        "kind": "Modified",
+        "path": "Cargo.lock",
+        "removals": 0
+      },
+      {
+        "insertions": 4,
+        "kind": "Modified",
+        "path": "Cargo.toml",
+        "removals": 0
+      },
+      {
+        "insertions": 3,
+        "kind": "Modified",
+        "path": "README.md",
+        "removals": 1
+      },
+      {
+        "insertions": 1,
+        "kind": "Added",
+        "path": "clippy.toml",
+        "removals": 0
+      },
+      {
+        "insertions": 120,
+        "kind": "Modified",
+        "path": "src/main.rs",
+        "removals": 2
+      },
+      {
+        "insertions": 108,
+        "kind": "Added",
+        "path": "tests/cli_paths.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 24,
+        "kind": "Added",
+        "path": "tests/version.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 98,
+        "kind": "Added",
+        "path": "tests/yamllint_compat.rs",
+        "removals": 0
+      }
+    ],
+    "seconds": 1757244337
+  },
+  {
+    "author": "Owen Lamont",
+    "changes": [
+      {
+        "insertions": 147,
+        "kind": "Modified",
+        "path": ".github/workflows/release.yml",
+        "removals": 22
+      },
+      {
+        "insertions": 1,
+        "kind": "Modified",
+        "path": "pyproject.toml",
+        "removals": 5
+      }
+    ],
+    "seconds": 1757249443
+  },
+  {
+    "author": "Owen Lamont",
+    "changes": [
+      {
+        "insertions": 3,
+        "kind": "Modified",
+        "path": ".github/workflows/release.yml",
+        "removals": 2
+      }
+    ],
+    "seconds": 1757250878
+  },
+  {
+    "author": "Owen Lamont",
+    "changes": [
+      {
+        "insertions": 100,
+        "kind": "Added",
+        "path": ".github/workflows/ci.yml",
+        "removals": 0
+      },
+      {
+        "insertions": 0,
+        "kind": "Deleted",
+        "path": ".github/workflows/pre-commit.yml",
+        "removals": 32
+      },
+      {
+        "insertions": 3,
+        "kind": "Modified",
+        "path": ".gitignore",
+        "removals": 0
+      },
+      {
+        "insertions": 0,
+        "kind": "Modified",
+        "path": ".pre-commit-config.yaml",
+        "removals": 6
+      },
+      {
+        "insertions": 51,
+        "kind": "Modified",
+        "path": "AGENTS.md",
+        "removals": 0
+      },
+      {
+        "insertions": 1,
+        "kind": "Modified",
+        "path": "Cargo.lock",
+        "removals": 1
+      },
+      {
+        "insertions": 1,
+        "kind": "Modified",
+        "path": "Cargo.toml",
+        "removals": 1
+      },
+      {
+        "insertions": 46,
+        "kind": "Modified",
+        "path": "README.md",
+        "removals": 0
+      },
+      {
+        "insertions": 1,
+        "kind": "Modified",
+        "path": "pyproject.toml",
+        "removals": 1
+      },
+      {
+        "insertions": 0,
+        "kind": "Modified",
+        "path": "rumdl.toml",
+        "removals": 1
+      },
+      {
+        "insertions": 1,
+        "kind": "Modified",
+        "path": "rust-toolchain.toml",
+        "removals": 0
+      },
+      {
+        "insertions": 10,
+        "kind": "Modified",
+        "path": "src/main.rs",
+        "removals": 16
+      },
+      {
+        "insertions": 12,
+        "kind": "Modified",
+        "path": "tests/cli_paths.rs",
+        "removals": 8
+      },
+      {
+        "insertions": 16,
+        "kind": "Modified",
+        "path": "tests/yamllint_compat.rs",
+        "removals": 2
+      }
+    ],
+    "seconds": 1757503250
+  },
+  {
+    "author": "dependabot[bot]",
+    "changes": [
+      {
+        "insertions": 2,
+        "kind": "Modified",
+        "path": ".github/workflows/ci.yml",
+        "removals": 2
+      }
+    ],
+    "seconds": 1757673049
+  },
+  {
+    "author": "create-pr-workflow-auth[bot]",
+    "changes": [
+      {
+        "insertions": 2,
+        "kind": "Modified",
+        "path": ".pre-commit-config.yaml",
+        "removals": 2
+      }
+    ],
+    "seconds": 1757755594
+  },
+  {
+    "author": "dependabot[bot]",
+    "changes": [
+      {
+        "insertions": 4,
+        "kind": "Modified",
+        "path": ".github/workflows/ci.yml",
+        "removals": 4
+      },
+      {
+        "insertions": 3,
+        "kind": "Modified",
+        "path": ".github/workflows/release.yml",
+        "removals": 3
+      },
+      {
+        "insertions": 1,
+        "kind": "Modified",
+        "path": ".github/workflows/update_dependencies.yml",
+        "removals": 1
+      },
+      {
+        "insertions": 2,
+        "kind": "Modified",
+        "path": ".github/workflows/update_linters.yml",
+        "removals": 2
+      }
+    ],
+    "seconds": 1758244757
+  },
+  {
+    "author": "Owen Lamont",
+    "changes": [
+      {
+        "insertions": 9,
+        "kind": "Modified",
+        "path": ".github/workflows/ci.yml",
+        "removals": 2
+      },
+      {
+        "insertions": 116,
+        "kind": "Modified",
+        "path": "AGENTS.md",
+        "removals": 45
+      },
+      {
+        "insertions": 136,
+        "kind": "Modified",
+        "path": "Cargo.lock",
+        "removals": 2
+      },
+      {
+        "insertions": 3,
+        "kind": "Modified",
+        "path": "Cargo.toml",
+        "removals": 0
+      },
+      {
+        "insertions": 18,
+        "kind": "Modified",
+        "path": "README.md",
+        "removals": 0
+      },
+      {
+        "insertions": 1,
+        "kind": "Modified",
+        "path": "clippy.toml",
+        "removals": 1
+      },
+      {
+        "insertions": 1,
+        "kind": "Modified",
+        "path": "rust-toolchain.toml",
+        "removals": 1
+      },
+      {
+        "insertions": 24,
+        "kind": "Added",
+        "path": "src/bin/discover_config_bin.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 32,
+        "kind": "Added",
+        "path": "src/cli_support.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 85,
+        "kind": "Added",
+        "path": "src/conf/mod.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 734,
+        "kind": "Added",
+        "path": "src/config.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 32,
+        "kind": "Added",
+        "path": "src/discover.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 11,
+        "kind": "Added",
+        "path": "src/lib.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 34,
+        "kind": "Added",
+        "path": "src/lint.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 122,
+        "kind": "Modified",
+        "path": "src/main.rs",
+        "removals": 56
+      },
+      {
+        "insertions": 23,
+        "kind": "Added",
+        "path": "tests/build_global_cfg_error.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 66,
+        "kind": "Added",
+        "path": "tests/cli_config_flags.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 41,
+        "kind": "Added",
+        "path": "tests/cli_exit_and_errors.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 20,
+        "kind": "Added",
+        "path": "tests/cli_global_cfg_relaxed.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 39,
+        "kind": "Added",
+        "path": "tests/cli_invalid_project_config.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 0,
+        "kind": "Deleted",
+        "path": "tests/cli_paths.rs",
+        "removals": 112
+      },
+      {
+        "insertions": 73,
+        "kind": "Added",
+        "path": "tests/common/fake_env.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 1,
+        "kind": "Added",
+        "path": "tests/common/mod.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 9,
+        "kind": "Added",
+        "path": "tests/conf_builtin.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 24,
+        "kind": "Added",
+        "path": "tests/config_deep_merge_nonstring_key.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 23,
+        "kind": "Added",
+        "path": "tests/config_env_errors.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 15,
+        "kind": "Added",
+        "path": "tests/config_env_invalid_inline.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 17,
+        "kind": "Added",
+        "path": "tests/config_env_missing.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 195,
+        "kind": "Added",
+        "path": "tests/config_env_shim.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 52,
+        "kind": "Added",
+        "path": "tests/config_explicit_file_parse_error.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 125,
+        "kind": "Added",
+        "path": "tests/config_extended_features.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 185,
+        "kind": "Added",
+        "path": "tests/config_extends_inline.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 18,
+        "kind": "Added",
+        "path": "tests/config_extends_sequence.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 54,
+        "kind": "Added",
+        "path": "tests/config_find_project_home_boundary.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 40,
+        "kind": "Added",
+        "path": "tests/config_find_project_two_files_in_cwd.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 32,
+        "kind": "Added",
+        "path": "tests/config_from_yaml_paths.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 243,
+        "kind": "Added",
+        "path": "tests/config_ignore_errors.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 16,
+        "kind": "Added",
+        "path": "tests/config_invalid_globs.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 19,
+        "kind": "Added",
+        "path": "tests/config_invalid_types.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 111,
+        "kind": "Added",
+        "path": "tests/config_locale.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 26,
+        "kind": "Added",
+        "path": "tests/config_merge.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 23,
+        "kind": "Added",
+        "path": "tests/config_rules_non_string_keys.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 27,
+        "kind": "Added",
+        "path": "tests/config_scalar_overrides.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 41,
+        "kind": "Added",
+        "path": "tests/config_yaml_files.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 15,
+        "kind": "Added",
+        "path": "tests/config_yaml_files_all_non_string.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 30,
+        "kind": "Added",
+        "path": "tests/config_yaml_files_empty.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 66,
+        "kind": "Added",
+        "path": "tests/discover_config_bin_all.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 26,
+        "kind": "Added",
+        "path": "tests/discover_config_bin_env_invalid_yaml.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 24,
+        "kind": "Added",
+        "path": "tests/discover_config_bin_project_config_parse_error.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 26,
+        "kind": "Added",
+        "path": "tests/discover_config_bin_user_global_error.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 30,
+        "kind": "Added",
+        "path": "tests/discover_module.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 10,
+        "kind": "Added",
+        "path": "tests/discover_per_file_dir.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 21,
+        "kind": "Added",
+        "path": "tests/discover_per_file_project_config_error.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 32,
+        "kind": "Added",
+        "path": "tests/lint_multi_errors.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 30,
+        "kind": "Added",
+        "path": "tests/main_yaml_ok_filtering.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 15,
+        "kind": "Added",
+        "path": "tests/resolve_ctx_empty_parent.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 32,
+        "kind": "Added",
+        "path": "tests/user_global_invalid_yaml.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 0,
+        "kind": "Deleted",
+        "path": "tests/version.rs",
+        "removals": 24
+      },
+      {
+        "insertions": 8,
+        "kind": "Modified",
+        "path": "tests/yamllint_compat.rs",
+        "removals": 8
+      },
+      {
+        "insertions": 97,
+        "kind": "Added",
+        "path": "tests/yamllint_compat_config.rs",
+        "removals": 0
+      },
+      {
+        "insertions": 127,
+        "kind": "Added",
+        "path": "tests/yamllint_compat_list.rs",
+        "removals": 0
+      }
+    ],
+    "seconds": 1758453447
+  }
+]

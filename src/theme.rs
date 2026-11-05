@@ -1,5 +1,14 @@
 use bevy::prelude::*;
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Geometry {
+    pub file_min: Vec3,
+    pub file_max: Vec3,
+    pub avatar_radius: f32,
+    pub avatar_label_offset: Vec3,
+    pub label_height: f32,
+}
+
 #[derive(Clone)]
 pub(super) struct Theme {
     pub(super) clear: Color,
@@ -27,6 +36,9 @@ pub(super) struct Theme {
     pub(super) heading: Color,
     pub(super) label_emphasis: Color,
     pub(super) label_landmark: Color,
+    pub(super) avatar_radius: f32,
+    pub(super) avatar_label_offset: Vec3,
+    pub(super) label_height: f32,
 }
 
 impl Theme {
@@ -95,6 +107,35 @@ impl Theme {
             heading: Color::srgb(0.65, 0.8, 0.87),
             label_emphasis: Color::srgb(0.88, 0.95, 1.0),
             label_landmark: Color::srgb(0.62, 0.86, 0.95),
+            avatar_radius: 0.22,
+            avatar_label_offset: Vec3::new(0.3, 0.3, 0.0),
+            label_height: 20.0,
+        }
+    }
+
+    pub(super) fn geometry(&self) -> Geometry {
+        let (file_min, file_max) = [
+            (self.file_frame_position, self.file_frame_scale),
+            (self.file_face_position, self.file_face_scale),
+            (self.file_spine_position, self.file_spine_scale),
+            (Vec3::new(0.03, 0.09, -0.12), Vec3::new(0.26, 0.015, 0.03)),
+        ]
+        .into_iter()
+        .fold(
+            (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+            |(low, high), (position, scale)| {
+                (
+                    low.min(position - scale * 0.5),
+                    high.max(position + scale * 0.5),
+                )
+            },
+        );
+        Geometry {
+            file_min,
+            file_max,
+            avatar_radius: self.avatar_radius,
+            avatar_label_offset: self.avatar_label_offset,
+            label_height: self.label_height,
         }
     }
 
