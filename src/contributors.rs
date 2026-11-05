@@ -11,6 +11,7 @@ use crate::timeline::Event;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Key {
     Email(Vec<u8>),
+    Name(Vec<u8>),
     Config(usize),
 }
 
@@ -39,12 +40,14 @@ pub(super) struct Mappings {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Config {
     #[serde(default)]
     contributor: Vec<Entry>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Entry {
     name: String,
     emails: Vec<String>,
@@ -104,19 +107,29 @@ impl Mappings {
         let mut names = HashMap::new();
         for event in events.iter() {
             names.insert(
-                event.author.email.to_ascii_lowercase(),
+                unlisted_key(event),
                 String::from_utf8_lossy(&event.author.name).into_owned(),
             );
         }
         for event in events {
             let email = event.author.email.to_ascii_lowercase();
-            event.contributor = Some(self.emails.get(&email).cloned().unwrap_or_else(
-                || Contributor {
-                    name: names[&email].clone(),
-                    key: Key::Email(email),
-                },
-            ));
+            event.contributor =
+                Some(self.emails.get(&email).cloned().unwrap_or_else(|| {
+                    let key = unlisted_key(event);
+                    Contributor {
+                        name: names[&key].clone(),
+                        key,
+                    }
+                }));
         }
+    }
+}
+
+fn unlisted_key(event: &Event) -> Key {
+    if event.author.email.is_empty() {
+        Key::Name(event.author.name.clone())
+    } else {
+        Key::Email(event.author.email.to_ascii_lowercase())
     }
 }
 
@@ -150,8 +163,12 @@ mod tests {
     }
 
     fn names(events: &[Event], mappings: &Mappings) -> Vec<String> {
-        let mut sim =
-            Simulation::new(events, &Options::default(), &Theme::neon(), mappings);
+        let mut sim = Simulation::new(
+            events.to_vec(),
+            &Options::default(),
+            &Theme::neon(),
+            mappings,
+        );
         sim.advance_to(120, 30);
         sim.avatars()
             .iter()
@@ -193,6 +210,30 @@ emails = ["personal@example.invalid", "work@example.invalid"]
             names(&events, &Mappings::default()),
             ["Same Name", "Same Name"]
         );
+    }
+
+    #[test]
+    fn empty_emails_keep_different_authors_separate() {
+        let events = events(&[("Alice", ""), ("Bob", "")]);
+        assert_eq!(names(&events, &Mappings::default()), ["Alice", "Bob"]);
+    }
+
+    #[test]
+    fn unknown_tables_and_fields_report_the_file_and_key() {
+        for (text, key) in [
+            ("[[contributors]]", "contributors"),
+            (
+                "[[contributor]]\nname = 'Alice'\nemails = []\nemials = []",
+                "emials",
+            ),
+        ] {
+            let error = Mappings::parse(text, Path::new("aliases.toml")).unwrap_err();
+            assert!(matches!(error, Error::Parse { .. }));
+            assert!(error.to_string().contains("aliases.toml"));
+            let cause = std::error::Error::source(&error).unwrap().to_string();
+            assert!(cause.contains("unknown field"), "{cause}");
+            assert!(cause.contains(key), "{cause}");
+        }
     }
 
     #[test]

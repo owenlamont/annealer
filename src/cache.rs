@@ -195,7 +195,7 @@ emails = ["author@example.invalid"]
             assert_eq!(events[0].author.email, b"author@example.invalid");
             assert!(events[0].contributor.is_none());
             let mut sim = crate::model::Simulation::new(
-                &events,
+                events,
                 &crate::model::Options::default(),
                 &crate::theme::Theme::neon(),
                 &mappings,

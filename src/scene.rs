@@ -1083,7 +1083,7 @@ mod tests {
         let materials = world.resource::<Assets<StandardMaterial>>().len();
         let mut pools = Pools::default();
         let mut simulation = Simulation::new(
-            &crate::timeline::synthetic(),
+            crate::timeline::synthetic(),
             &model::Options::default(),
             &theme,
             &crate::contributors::Mappings::default(),
@@ -1164,7 +1164,7 @@ mod tests {
             })
             .collect();
         let mut simulation = Simulation::new(
-            &events,
+            events,
             &model::Options::default(),
             &Theme::neon(),
             &crate::contributors::Mappings::default(),
@@ -1219,7 +1219,7 @@ mod tests {
     fn membership_rings_follow_subtree_moves_and_keep_file_icons() {
         use crate::timeline::{Event, FileChange, Kind};
 
-        let events = [
+        let events = vec![
             Event {
                 author: crate::timeline::Identity {
                     name: b"Ada".to_vec(),
@@ -1252,7 +1252,7 @@ mod tests {
             },
         ];
         let mut simulation = Simulation::new(
-            &events,
+            events,
             &model::Options::default(),
             &Theme::neon(),
             &crate::contributors::Mappings::default(),

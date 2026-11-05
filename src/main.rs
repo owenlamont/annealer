@@ -120,7 +120,7 @@ impl Source {
             commits: self.commits,
         };
         Ok((
-            model::Simulation::new(&events, &options, &theme::Theme::neon(), &mappings),
+            model::Simulation::new(events, &options, &theme::Theme::neon(), &mappings),
             title,
         ))
     }

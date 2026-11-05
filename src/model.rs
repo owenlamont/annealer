@@ -121,12 +121,11 @@ pub(super) struct Simulation {
 
 impl Simulation {
     pub(super) fn new(
-        events: &[Event],
+        mut events: Vec<Event>,
         options: &Options,
         theme: &Theme,
         mappings: &Mappings,
     ) -> Self {
-        let mut events = events.to_vec();
         mappings.apply(&mut events);
         let start = options.start.min(events.len());
         let end = options
@@ -161,10 +160,13 @@ impl Simulation {
             state.authors.clear();
         }
         (state.focus, state.distance) = state.fit();
+        let total = events.len();
+        events.truncate(end);
+        events.drain(..start);
         Self {
-            events: events[start..end].to_vec(),
+            events,
             offset: start,
-            total: events.len(),
+            total,
             commit_seconds: options.commit_seconds,
             initial: state.clone(),
             state,
@@ -836,11 +838,50 @@ mod tests {
 
     fn simulation() -> Simulation {
         Simulation::new(
-            &timeline::synthetic(),
+            timeline::synthetic(),
             &Options::default(),
             &Theme::neon(),
             &crate::contributors::Mappings::default(),
         )
+    }
+
+    #[test]
+    fn construction_preserves_event_buffers_when_selecting_a_range() {
+        let events: Vec<_> = ["First", "Second"]
+            .into_iter()
+            .map(|name| Event {
+                author: timeline::Identity {
+                    name: name.as_bytes().to_vec(),
+                    email: name.as_bytes().to_vec(),
+                },
+                contributor: None,
+                seconds: 0,
+                changes: vec![timeline::FileChange {
+                    path: name.to_owned(),
+                    kind: Kind::Added,
+                    insertions: 1,
+                    removals: 0,
+                }],
+            })
+            .collect();
+        let total = events.len();
+        let changes = events[1].changes.as_ptr();
+        let author = events[1].author.name.as_ptr();
+        let sim = Simulation::new(
+            events,
+            &Options {
+                start: 1,
+                commits: Some(1),
+                ..Options::default()
+            },
+            &Theme::neon(),
+            &Mappings::default(),
+        );
+        assert_eq!(sim.total(), total);
+        assert_eq!(sim.commit(), 1);
+        assert_eq!(sim.events.len(), 1);
+        assert_eq!(sim.events[0].changes.as_ptr(), changes);
+        assert_eq!(sim.events[0].author.name.as_ptr(), author);
     }
 
     fn assert_clearance(sim: &Simulation) {
@@ -892,7 +933,7 @@ mod tests {
     fn synthetic_avatars_clear_file_tops_during_growth_and_rewind() {
         for start in [0, 8] {
             let mut sim = Simulation::new(
-                &timeline::synthetic(),
+                timeline::synthetic(),
                 &Options {
                     start,
                     ..Options::default()
@@ -953,7 +994,7 @@ mod tests {
         theme.avatar_radius = 0.5;
         theme.label_height = 28.0;
         let mut sim = Simulation::new(
-            &timeline::synthetic(),
+            timeline::synthetic(),
             &Options::default(),
             &theme,
             &crate::contributors::Mappings::default(),
@@ -1023,7 +1064,7 @@ mod tests {
             ..Options::default()
         };
         let sim = Simulation::new(
-            &timeline::synthetic(),
+            timeline::synthetic(),
             &options,
             &Theme::neon(),
             &crate::contributors::Mappings::default(),
