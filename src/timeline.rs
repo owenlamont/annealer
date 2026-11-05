@@ -2,7 +2,10 @@ use std::{collections::HashMap, fmt::Write};
 
 use crate::history::{BlobDiff, ChangeKind, Commit, History};
 
-#[derive(Clone, Debug, PartialEq)]
+// Bump when the snapshot format, history import policies or timeline conversion change.
+pub(super) const CACHE_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) enum Kind {
     Added,
     Deleted,
@@ -10,7 +13,7 @@ pub(super) enum Kind {
     Moved { from: String },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct FileChange {
     pub path: String,
     pub kind: Kind,
@@ -18,7 +21,7 @@ pub(super) struct FileChange {
     pub removals: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Event {
     pub author: String,
     pub seconds: i64,

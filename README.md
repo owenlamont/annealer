@@ -79,6 +79,17 @@ Escape closes the window. Export writes 1280×720 frames for the whole playback 
 30 fps unless `--frames` or `--fps` say otherwise. The output directory must not
 already exist. Commits touching more than 24 files aim beams at directories instead.
 
+Repository playback caches the latest first-parent timeline and diff counts as JSON
+under the platform user cache directory (`annealer/`), namespaced by a hash of the
+canonical common Git directory, shared by linked worktrees. A resolved commit ID and
+a format/import/timeline version
+identify the snapshot; a different tip replaces the snapshot after a full import.
+Playback range and speed reuse the complete timeline. Cache failures regenerate
+without blocking playback; `--no-cache` skips cache reads and writes. Inspection
+and repositories using Git replacement objects always import directly.
+Messages, signatures, blob IDs and hunks are not cached. Bump `CACHE_VERSION` in
+`src/timeline.rs` when cached semantics change.
+
 Rendering changes also need the graphics export check and visual inspection:
 
 ```sh

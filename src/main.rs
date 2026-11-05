@@ -12,6 +12,7 @@
     reason = "Bevy's platform backends require incompatible transitive crate versions"
 )]
 
+mod cache;
 mod export;
 mod history;
 mod layout;
@@ -20,7 +21,7 @@ mod scene;
 mod theme;
 mod timeline;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{CommandFactory, Parser, Subcommand};
 
@@ -66,6 +67,9 @@ struct Source {
     repository: Option<PathBuf>,
     #[arg(long, default_value = "HEAD")]
     revision: String,
+    /// Import playback history without reading or writing the user cache.
+    #[arg(long)]
+    no_cache: bool,
     /// Commits laid out and settled before playback begins.
     #[arg(long, default_value_t = 0)]
     start: usize,
@@ -77,10 +81,22 @@ struct Source {
 }
 
 impl Source {
+    fn events(
+        &self,
+        cache_root: Option<&Path>,
+    ) -> Result<Vec<timeline::Event>, history::Error> {
+        match &self.repository {
+            Some(path) => {
+                cache::load(path, &self.revision, cache_root.filter(|_| !self.no_cache))
+            }
+            None => Ok(timeline::synthetic()),
+        }
+    }
+
     fn load(&self) -> anyhow::Result<(model::Simulation, String)> {
+        let events = self.events(cache::root().as_deref())?;
         let (events, title) = match &self.repository {
             Some(path) => {
-                let history = history::import(path, &self.revision)?;
                 let name = path
                     .canonicalize()
                     .ok()
@@ -89,9 +105,9 @@ impl Source {
                             .map(|name| name.to_string_lossy().into_owned())
                     })
                     .unwrap_or_else(|| path.display().to_string());
-                (timeline::from_history(&history), name)
+                (events, name)
             }
-            None => (timeline::synthetic(), "Synthetic history".to_owned()),
+            None => (events, "Synthetic history".to_owned()),
         };
         let options = model::Options {
             commit_seconds: self.commit_seconds,
