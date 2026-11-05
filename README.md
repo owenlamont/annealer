@@ -33,7 +33,7 @@ disabled.
 Explore a Tron-like neon style: steady glow, luminous connections and smooth motion.
 Aim for a flashy presentation with no strobing and no loss of readability. Preserve
 crisp file shapes and labels, and restrain brightness where activity overlaps.
-Multiple visual styles are a later possibility; the probe does not implement themes.
+The probe currently selects the neon theme; additional visual styles remain future work.
 
 ## Prototype direction
 
@@ -128,3 +128,12 @@ a local GPU or software-renderer export and visual inspection.
 The lint setup follows [ryl](https://github.com/owenlamont/ryl): rustfmt, strict
 Clippy, Markdown and YAML checks, spelling, workflow linting and file hygiene.
 Changes go through feature branches and pull requests.
+
+## Acknowledgements
+
+- [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme)
+  (MIT) — file icons.
+- [Bevy](https://bevy.org/) — rendering and application framework.
+- [resvg](https://github.com/linebender/resvg) — startup SVG rasterisation.
+- [gix](https://github.com/GitoxideLabs/gitoxide) — Git history access.
+- [Gource](https://gource.io/) — inspiration for animated Git history.

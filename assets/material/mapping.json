@@ -1,0 +1,607 @@
+[
+  {
+    "extensions": [],
+    "filenames": [],
+    "name": "file"
+  },
+  {
+    "extensions": [
+      "asp",
+      "aspx",
+      "htm",
+      "html",
+      "html_vm",
+      "jshtm",
+      "rhtml",
+      "shtml",
+      "volt",
+      "xht",
+      "xhtml"
+    ],
+    "filenames": [],
+    "name": "html"
+  },
+  {
+    "extensions": [
+      "copilotmd",
+      "litcoffee",
+      "markdn",
+      "markdown",
+      "md",
+      "mdown",
+      "mdtext",
+      "mdtxt",
+      "mdwn",
+      "mkd",
+      "mkdn",
+      "ronn",
+      "rst",
+      "workbook"
+    ],
+    "filenames": [],
+    "name": "markdown"
+  },
+  {
+    "extensions": [
+      "css"
+    ],
+    "filenames": [],
+    "name": "css"
+  },
+  {
+    "extensions": [
+      "geojson",
+      "har",
+      "json",
+      "json5",
+      "jsonc",
+      "jsonl",
+      "jsonld",
+      "ndjson",
+      "ts.map",
+      "tsbuildinfo",
+      "webmanifest"
+    ],
+    "filenames": [
+      ".esformatter",
+      ".jsbeautifyrc",
+      ".jscsrc",
+      ".jshintrc",
+      ".whitesource",
+      "cdp.pid",
+      "composer.lock"
+    ],
+    "name": "json"
+  },
+  {
+    "extensions": [
+      "cff",
+      "eyaml",
+      "eyml",
+      "winget",
+      "yaml",
+      "yaml-tmlanguage",
+      "yaml-tmpreferences",
+      "yaml-tmtheme",
+      "yaml.dist",
+      "yml",
+      "yml.dist"
+    ],
+    "filenames": [],
+    "name": "yaml"
+  },
+  {
+    "extensions": [
+      "toml",
+      "tosd"
+    ],
+    "filenames": [],
+    "name": "toml"
+  },
+  {
+    "extensions": [
+      "cjs",
+      "es6",
+      "esx",
+      "js",
+      "mjs",
+      "pac"
+    ],
+    "filenames": [
+      "jakefile"
+    ],
+    "name": "javascript"
+  },
+  {
+    "extensions": [
+      "jsx"
+    ],
+    "filenames": [],
+    "name": "react"
+  },
+  {
+    "extensions": [
+      "tsx"
+    ],
+    "filenames": [],
+    "name": "react_ts"
+  },
+  {
+    "extensions": [
+      "cts",
+      "mts",
+      "ts"
+    ],
+    "filenames": [],
+    "name": "typescript"
+  },
+  {
+    "extensions": [
+      "c",
+      "i",
+      "mi"
+    ],
+    "filenames": [],
+    "name": "c"
+  },
+  {
+    "extensions": [
+      "h"
+    ],
+    "filenames": [],
+    "name": "h"
+  },
+  {
+    "extensions": [
+      "c++",
+      "c++m",
+      "cc",
+      "ccm",
+      "cp",
+      "cpp",
+      "cppm",
+      "cxx",
+      "cxxm",
+      "h.in",
+      "hpp.in",
+      "ii",
+      "ipp",
+      "ixx",
+      "mii",
+      "tpp",
+      "txx"
+    ],
+    "filenames": [],
+    "name": "cpp"
+  },
+  {
+    "extensions": [
+      "h++",
+      "hh",
+      "hp",
+      "hpp",
+      "hxx",
+      "inl",
+      "tcc"
+    ],
+    "filenames": [],
+    "name": "hpp"
+  },
+  {
+    "extensions": [
+      "go"
+    ],
+    "filenames": [],
+    "name": "go"
+  },
+  {
+    "extensions": [],
+    "filenames": [
+      "go.mod",
+      "go.sum",
+      "go.work",
+      "go.work.sum"
+    ],
+    "name": "go-mod"
+  },
+  {
+    "extensions": [
+      "cpy",
+      "gyp",
+      "gypi",
+      "ipy",
+      "py",
+      "pyi",
+      "pyt",
+      "pyw",
+      "rpy"
+    ],
+    "filenames": [],
+    "name": "python"
+  },
+  {
+    "extensions": [
+      "egg",
+      "pyc",
+      "whl"
+    ],
+    "filenames": [
+      ".coverage",
+      ".coveragerc",
+      ".pylintrc",
+      ".python-version",
+      ".scrapy",
+      "celerybeat-schedule",
+      "celerybeat.pid",
+      "manifest.in",
+      "pipfile",
+      "py.typed",
+      "pylintrc",
+      "pyproject.toml",
+      "requirements.txt"
+    ],
+    "name": "python-misc"
+  },
+  {
+    "extensions": [],
+    "filenames": [
+      ".ruff.toml",
+      "ruff.toml"
+    ],
+    "name": "ruff"
+  },
+  {
+    "extensions": [],
+    "filenames": [
+      ".uv.toml",
+      "uv.lock",
+      "uv.toml"
+    ],
+    "name": "uv"
+  },
+  {
+    "extensions": [
+      "awk",
+      "bash",
+      "bash_aliases",
+      "bash_login",
+      "bash_logout",
+      "bash_profile",
+      "bashrc",
+      "bat",
+      "cmd",
+      "csh",
+      "cshrc",
+      "ebuild",
+      "eclass",
+      "exp",
+      "fish",
+      "ksh",
+      "nu",
+      "profile",
+      "sh",
+      "tcsh",
+      "tcshrc",
+      "xprofile",
+      "xsession",
+      "xsessionrc",
+      "xsh",
+      "yash_profile",
+      "yashrc",
+      "zlogin",
+      "zlogout",
+      "zprofile",
+      "zsh",
+      "zsh-theme",
+      "zshenv",
+      "zshrc"
+    ],
+    "filenames": [
+      ".envrc",
+      ".hushlogin",
+      "apkbuild",
+      "bashrc_apple_terminal",
+      "commit-msg",
+      "pkgbuild",
+      "post-merge",
+      "pre-commit",
+      "pre-push",
+      "zlogin",
+      "zlogout",
+      "zprofile",
+      "zshenv",
+      "zshrc",
+      "zshrc_apple_terminal"
+    ],
+    "name": "console"
+  },
+  {
+    "extensions": [
+      "ps1",
+      "ps1xml",
+      "psc1",
+      "psd1",
+      "psm1",
+      "psrc",
+      "pssc"
+    ],
+    "filenames": [],
+    "name": "powershell"
+  },
+  {
+    "extensions": [],
+    "filenames": [
+      "copying",
+      "copying.md",
+      "copying.rst",
+      "copying.txt",
+      "copyright",
+      "copyright.md",
+      "copyright.rst",
+      "copyright.txt",
+      "licence",
+      "licence-agpl",
+      "licence-apache",
+      "licence-bsd",
+      "licence-gpl",
+      "licence-lgpl",
+      "licence-mit",
+      "licence.md",
+      "licence.rst",
+      "licence.txt",
+      "license",
+      "license-agpl",
+      "license-apache",
+      "license-bsd",
+      "license-gpl",
+      "license-lgpl",
+      "license-mit",
+      "license.md",
+      "license.rst",
+      "license.txt"
+    ],
+    "name": "license"
+  },
+  {
+    "extensions": [
+      "compose.yaml",
+      "compose.yml",
+      "containerfile",
+      "containerignore",
+      "docker-compose.yaml",
+      "docker-compose.yml",
+      "dockerfile",
+      "dockerignore"
+    ],
+    "filenames": [
+      "compose.alpha.yaml",
+      "compose.alpha.yml",
+      "compose.beta.yaml",
+      "compose.beta.yml",
+      "compose.ci.yaml",
+      "compose.ci.yml",
+      "compose.dev.yaml",
+      "compose.dev.yml",
+      "compose.development.yaml",
+      "compose.development.yml",
+      "compose.local.yaml",
+      "compose.local.yml",
+      "compose.override.yaml",
+      "compose.override.yml",
+      "compose.prod.yaml",
+      "compose.prod.yml",
+      "compose.production.yaml",
+      "compose.production.yml",
+      "compose.stage.yaml",
+      "compose.stage.yml",
+      "compose.staging.yaml",
+      "compose.staging.yml",
+      "compose.test.yaml",
+      "compose.test.yml",
+      "compose.testing.yaml",
+      "compose.testing.yml",
+      "compose.web.yaml",
+      "compose.web.yml",
+      "compose.worker.yaml",
+      "compose.worker.yml",
+      "compose.yaml",
+      "compose.yml",
+      "containerfile",
+      "containerfile.alpha",
+      "containerfile.beta",
+      "containerfile.ci",
+      "containerfile.dev",
+      "containerfile.development",
+      "containerfile.local",
+      "containerfile.prod",
+      "containerfile.production",
+      "containerfile.stage",
+      "containerfile.staging",
+      "containerfile.test",
+      "containerfile.testing",
+      "containerfile.web",
+      "containerfile.worker",
+      "docker-compose.alpha.yaml",
+      "docker-compose.alpha.yml",
+      "docker-compose.beta.yaml",
+      "docker-compose.beta.yml",
+      "docker-compose.ci.yaml",
+      "docker-compose.ci.yml",
+      "docker-compose.dev.yaml",
+      "docker-compose.dev.yml",
+      "docker-compose.development.yaml",
+      "docker-compose.development.yml",
+      "docker-compose.local.yaml",
+      "docker-compose.local.yml",
+      "docker-compose.override.yaml",
+      "docker-compose.override.yml",
+      "docker-compose.prod.yaml",
+      "docker-compose.prod.yml",
+      "docker-compose.production.yaml",
+      "docker-compose.production.yml",
+      "docker-compose.stage.yaml",
+      "docker-compose.stage.yml",
+      "docker-compose.staging.yaml",
+      "docker-compose.staging.yml",
+      "docker-compose.test.yaml",
+      "docker-compose.test.yml",
+      "docker-compose.testing.yaml",
+      "docker-compose.testing.yml",
+      "docker-compose.web.yaml",
+      "docker-compose.web.yml",
+      "docker-compose.worker.yaml",
+      "docker-compose.worker.yml",
+      "docker-compose.yaml",
+      "docker-compose.yml",
+      "dockerfile",
+      "dockerfile.alpha",
+      "dockerfile.beta",
+      "dockerfile.ci",
+      "dockerfile.dev",
+      "dockerfile.development",
+      "dockerfile.local",
+      "dockerfile.prod",
+      "dockerfile.production",
+      "dockerfile.stage",
+      "dockerfile.staging",
+      "dockerfile.test",
+      "dockerfile.testing",
+      "dockerfile.web",
+      "dockerfile.windows",
+      "dockerfile.worker"
+    ],
+    "name": "docker"
+  },
+  {
+    "extensions": [
+      "ron",
+      "rs"
+    ],
+    "filenames": [],
+    "name": "rust"
+  },
+  {
+    "extensions": [
+      "patch"
+    ],
+    "filenames": [
+      ".git",
+      ".git-blame-ignore",
+      ".git-blame-ignore-revs",
+      ".git-for-windows-updater",
+      ".gitattributes",
+      ".gitattributes-global",
+      ".gitattributes_global",
+      ".gitconfig",
+      ".gitignore",
+      ".gitignore-global",
+      ".gitignore_global",
+      ".gitinclude",
+      ".gitkeep",
+      ".gitmessage",
+      ".gitmodules",
+      ".gitpreserve",
+      ".keep",
+      "commit_editmsg",
+      "git-history",
+      "git-rebase-todo",
+      "merge_msg"
+    ],
+    "name": "git"
+  },
+  {
+    "extensions": [
+      "lock"
+    ],
+    "filenames": [
+      "security",
+      "security.md",
+      "security.txt"
+    ],
+    "name": "lock"
+  },
+  {
+    "extensions": [],
+    "filenames": [
+      ".esmrc",
+      ".node-version",
+      ".nvmrc",
+      "package-lock.json",
+      "package.json"
+    ],
+    "name": "nodejs"
+  },
+  {
+    "extensions": [],
+    "filenames": [
+      ".npmignore",
+      ".npmrc"
+    ],
+    "name": "npm"
+  },
+  {
+    "extensions": [],
+    "filenames": [
+      ".yarn-integrity",
+      ".yarnclean",
+      ".yarnrc",
+      ".yarnrc.yaml",
+      ".yarnrc.yml",
+      "yarn-error.log",
+      "yarn.lock"
+    ],
+    "name": "yarn"
+  },
+  {
+    "extensions": [],
+    "filenames": [
+      "contributing",
+      "contributing.md",
+      "contributing.rst",
+      "contributing.txt"
+    ],
+    "name": "contributing"
+  },
+  {
+    "extensions": [],
+    "filenames": [
+      "readme",
+      "readme.md",
+      "readme.rst",
+      "readme.txt"
+    ],
+    "name": "readme"
+  },
+  {
+    "extensions": [],
+    "filenames": [
+      "changelog",
+      "changelog.md",
+      "changelog.rst",
+      "changelog.txt",
+      "changes",
+      "changes.md",
+      "changes.rst",
+      "changes.txt"
+    ],
+    "name": "changelog"
+  },
+  {
+    "extensions": [],
+    "filenames": [
+      ".ecrc",
+      ".editorconfig",
+      ".editorconfig-checker.json"
+    ],
+    "name": "editorconfig"
+  },
+  {
+    "extensions": [],
+    "filenames": [
+      ".pnpmfile.cjs",
+      "pnpm-lock.yaml",
+      "pnpm-workspace.yaml"
+    ],
+    "name": "pnpm"
+  }
+]

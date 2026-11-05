@@ -8,29 +8,32 @@ pub(super) struct Geometry {
     pub avatar_label_offset: Vec3,
     pub label_height: f32,
 }
+mod icons;
 
 #[derive(Clone)]
 pub(super) struct Theme {
+    pub(super) glyphs: &'static [FileGlyph],
+    pub(super) glyph_material: StandardMaterial,
+    pub(super) glyph_texture: GlyphTexture,
+    pub(super) file_glyph_transform: Transform,
+    pub(super) file_tile: Option<FileTile>,
+    pub(super) membership_radii: Vec2,
+    pub(super) membership_transform: Transform,
+    pub(super) activity_radii: Vec2,
+    pub(super) activity_transform: Transform,
+    pub(super) activity_growth: f32,
     pub(super) clear: Color,
-    pub(super) paper: StandardMaterial,
     pub(super) edge: StandardMaterial,
     pub(super) grid: StandardMaterial,
     pub(super) descending: StandardMaterial,
     pub(super) rising: StandardMaterial,
     pub(super) floor: StandardMaterial,
-    pub(super) spines: [StandardMaterial; 7],
     pub(super) avatars: [StandardMaterial; 6],
     pub(super) glass: [StandardMaterial; 6],
     pub(super) directories: Vec<Vec<StandardMaterial>>,
     pub(super) directory_node_scale: Vec3,
     pub(super) directory_edge_widths: Vec<f32>,
     pub(super) directory_edge_height: f32,
-    pub(super) file_frame_position: Vec3,
-    pub(super) file_frame_scale: Vec3,
-    pub(super) file_face_position: Vec3,
-    pub(super) file_face_scale: Vec3,
-    pub(super) file_spine_position: Vec3,
-    pub(super) file_spine_scale: Vec3,
     pub(super) label: Color,
     pub(super) label_background: Color,
     pub(super) heading: Color,
@@ -39,6 +42,25 @@ pub(super) struct Theme {
     pub(super) avatar_radius: f32,
     pub(super) avatar_label_offset: Vec3,
     pub(super) label_height: f32,
+}
+
+pub(super) struct FileGlyph {
+    pub(super) svg: &'static str,
+    filenames: Vec<String>,
+    extensions: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct GlyphTexture {
+    pub(super) size: u16,
+    pub(super) mipmaps: bool,
+    pub(super) padding: f32,
+}
+
+#[derive(Clone)]
+pub(super) struct FileTile {
+    pub(super) material: StandardMaterial,
+    pub(super) transform: Transform,
 }
 
 impl Theme {
@@ -57,23 +79,35 @@ impl Theme {
             ..default()
         };
         Self {
+            glyphs: icons::material(),
+            glyph_texture: GlyphTexture {
+                size: 256,
+                mipmaps: true,
+                padding: 1.0 / 32.0,
+            },
+            glyph_material: StandardMaterial {
+                base_color: Color::WHITE,
+                alpha_mode: AlphaMode::Blend,
+                unlit: true,
+                ..default()
+            },
+            file_glyph_transform: Transform::from_xyz(0.0, 0.105, 0.0)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                .with_scale(Vec3::new(0.48, 0.48, 1.0)),
+            file_tile: None,
+            membership_radii: Vec2::new(0.255, 0.27),
+            membership_transform: Transform::from_xyz(0.0, 0.015, 0.0)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+            activity_radii: Vec2::new(0.29, 0.32),
+            activity_transform: Transform::from_xyz(0.0, 0.035, 0.0)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+            activity_growth: 0.45,
             clear: Color::srgb(0.012, 0.023, 0.04),
-            paper: solid(Color::srgb(0.64, 0.76, 0.85)),
             edge: solid(Color::srgb(0.09, 0.2, 0.28)),
             grid: solid(Color::srgb(0.045, 0.09, 0.13)),
             descending: solid(developers[0]),
             rising: solid(developers[1]),
             floor: solid(Color::srgb(0.02, 0.036, 0.06)),
-            spines: [
-                Color::srgb(1.0, 0.55, 0.25),
-                Color::srgb(0.35, 0.65, 1.0),
-                Color::srgb(0.85, 0.9, 0.95),
-                Color::srgb(0.45, 0.95, 0.55),
-                Color::srgb(1.0, 0.85, 0.3),
-                Color::srgb(0.9, 0.4, 0.9),
-                Color::srgb(0.45, 0.5, 0.58),
-            ]
-            .map(solid),
             avatars: developers.map(solid),
             glass: developers.map(|color| StandardMaterial {
                 base_color: color.with_alpha(0.32),
@@ -96,12 +130,6 @@ impl Theme {
             directory_node_scale: Vec3::new(0.24, 0.04, 0.24),
             directory_edge_widths: vec![0.20, 0.15, 0.11, 0.08],
             directory_edge_height: 0.025,
-            file_frame_position: Vec3::new(0.0, 0.05, 0.0),
-            file_frame_scale: Vec3::new(0.46, 0.06, 0.58),
-            file_face_position: Vec3::new(0.0, 0.085, 0.0),
-            file_face_scale: Vec3::new(0.34, 0.01, 0.46),
-            file_spine_position: Vec3::new(-0.13, 0.09, 0.0),
-            file_spine_scale: Vec3::new(0.05, 0.02, 0.40),
             label: Color::srgb(0.72, 0.83, 0.9),
             label_background: Color::srgba(0.008, 0.016, 0.03, 0.72),
             heading: Color::srgb(0.65, 0.8, 0.87),
@@ -114,22 +142,27 @@ impl Theme {
     }
 
     pub(super) fn geometry(&self) -> Geometry {
-        let (file_min, file_max) = [
-            (self.file_frame_position, self.file_frame_scale),
-            (self.file_face_position, self.file_face_scale),
-            (self.file_spine_position, self.file_spine_scale),
-            (Vec3::new(0.03, 0.09, -0.12), Vec3::new(0.26, 0.015, 0.03)),
+        let pieces = [
+            (self.file_glyph_transform, Vec3::new(0.5, 0.5, 0.0)),
+            (
+                self.membership_transform,
+                Vec3::new(self.membership_radii.y, self.membership_radii.y, 0.0),
+            ),
         ]
         .into_iter()
-        .fold(
-            (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
-            |(low, high), (position, scale)| {
-                (
-                    low.min(position - scale * 0.5),
-                    high.max(position + scale * 0.5),
-                )
-            },
+        .chain(
+            self.file_tile
+                .iter()
+                .map(|tile| (tile.transform, Vec3::splat(0.5))),
         );
+        let mut file_min = Vec3::splat(f32::MAX);
+        let mut file_max = Vec3::splat(f32::MIN);
+        for (transform, half) in pieces {
+            let world_half = Mat3::from_quat(transform.rotation).abs()
+                * (transform.scale * half).abs();
+            file_min = file_min.min(transform.translation - world_half);
+            file_max = file_max.max(transform.translation + world_half);
+        }
         Geometry {
             file_min,
             file_max,
@@ -144,16 +177,27 @@ impl Theme {
             .min(self.directory_edge_widths.len() - 1)]
     }
 
-    pub(super) fn spine_kind(extension: &str) -> usize {
-        match extension {
-            "rs" | "c" | "cpp" | "h" | "go" => 0,
-            "py" | "pyi" | "ipynb" => 1,
-            "md" | "rst" | "txt" | "html" => 2,
-            "toml" | "yaml" | "yml" | "json" | "lock" | "cfg" | "ini" => 3,
-            "js" | "ts" | "tsx" | "jsx" | "mjs" => 4,
-            "sh" | "ps1" | "nix" | "snap" => 5,
-            _ => 6,
-        }
+    pub(super) fn glyph_kind(&self, name: &str) -> usize {
+        self.glyphs
+            .iter()
+            .position(|glyph| {
+                glyph
+                    .filenames
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(name))
+            })
+            .or_else(|| {
+                name.match_indices('.').find_map(|(index, _)| {
+                    let extension = &name[index + 1..];
+                    self.glyphs.iter().position(|glyph| {
+                        glyph
+                            .extensions
+                            .iter()
+                            .any(|known| known.eq_ignore_ascii_case(extension))
+                    })
+                })
+            })
+            .unwrap_or(0)
     }
 }
 
@@ -162,17 +206,103 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trunks_are_wider_and_spines_have_pale_backing() {
+    fn file_bounds_follow_icons_rings_and_optional_tiles() {
+        let mut theme = Theme::neon();
+        let bare = theme.geometry();
+        assert!((bare.file_min - Vec3::new(-0.27, 0.015, -0.27)).length() < 0.000_001);
+        assert!((bare.file_max - Vec3::new(0.27, 0.105, 0.27)).length() < 0.000_001);
+        theme.file_tile = Some(FileTile {
+            material: StandardMaterial::default(),
+            transform: Transform::from_xyz(0.0, 0.4, 0.0)
+                .with_scale(Vec3::new(0.8, 0.2, 0.8)),
+        });
+        let tiled = theme.geometry();
+        assert!((tiled.file_min - Vec3::new(-0.4, 0.015, -0.4)).length() < 0.000_001);
+        assert!((tiled.file_max - Vec3::new(0.4, 0.5, 0.4)).length() < 0.000_001);
+        theme
+            .file_tile
+            .as_mut()
+            .expect("tile style")
+            .transform
+            .rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let rotated = theme.geometry();
+        assert!((rotated.file_min - Vec3::new(-0.27, 0.0, -0.4)).length() < 0.000_001);
+        assert!((rotated.file_max - Vec3::new(0.27, 0.8, 0.4)).length() < 0.000_001);
+    }
+
+    #[test]
+    fn filenames_override_extensions_and_unknowns_keep_the_fallback() {
         let theme = Theme::neon();
+        for (name, equivalent) in [
+            ("Cargo.toml", "settings.toml"),
+            ("Cargo.lock", "deps.lock"),
+            ("README.MD", "readme"),
+            ("Dockerfile", "image.dockerfile"),
+            ("Containerfile", "Dockerfile"),
+            (".gitignore", "change.patch"),
+            (".bashrc", "build.sh"),
+            ("main.PY", "main.py"),
+            ("workflow.YML", "workflow.yaml"),
+            ("index.docker-compose.yml", "Dockerfile"),
+            ("file.h.in", "main.cpp"),
+            ("pyproject.toml", "py.typed"),
+            ("PNPM-LOCK.YAML", "pnpm-workspace.yaml"),
+        ] {
+            assert_ne!(theme.glyph_kind(name), 0, "{name}");
+            assert_eq!(
+                theme.glyph_kind(name),
+                theme.glyph_kind(equivalent),
+                "{name}"
+            );
+        }
+        for name in ["unknown.xyz", "no_extension", "", ".unknown"] {
+            assert_eq!(theme.glyph_kind(name), 0, "{name}");
+        }
+    }
+
+    #[test]
+    fn mapping_keys_are_unique_and_required_languages_have_distinct_art() {
+        let theme = Theme::neon();
+        let mut filenames = std::collections::HashSet::new();
+        let mut extensions = std::collections::HashSet::new();
+        for glyph in theme.glyphs {
+            for name in &glyph.filenames {
+                assert!(filenames.insert(name), "duplicate filename {name}");
+            }
+            for extension in &glyph.extensions {
+                assert!(
+                    extensions.insert(extension),
+                    "duplicate extension {extension}"
+                );
+            }
+        }
+        let kinds = ["main.rs", "main.py", "Cargo.toml", "ci.yaml", "guide.md"]
+            .map(|name| theme.glyph_kind(name));
+        assert_eq!(
+            kinds
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            5
+        );
+        let art: std::collections::HashSet<_> = kinds
+            .into_iter()
+            .map(|kind| theme.glyphs[kind].svg)
+            .collect();
+        assert_eq!(art.len(), 5);
+        assert!(!kinds.contains(&0));
+    }
+
+    #[test]
+    fn neon_has_bare_untinted_icons_and_wider_trunks() {
+        let theme = Theme::neon();
+        assert!(theme.file_tile.is_none());
+        assert_eq!(theme.glyph_material.base_color, Color::WHITE);
+        assert!(theme.glyph_material.unlit);
         assert!(theme.directory_edge_width(1) > theme.directory_edge_width(4));
         assert_eq!(
             theme.directory_edge_width(4),
             theme.directory_edge_width(u16::MAX)
         );
-        let face_left = theme.file_face_position.x - theme.file_face_scale.x * 0.5;
-        let face_right = theme.file_face_position.x + theme.file_face_scale.x * 0.5;
-        let spine_half_width = theme.file_spine_scale.x * 0.5;
-        assert!(theme.file_spine_position.x - spine_half_width > face_left);
-        assert!(theme.file_spine_position.x + spine_half_width < face_right);
     }
 }

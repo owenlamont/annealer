@@ -3,11 +3,12 @@ use std::collections::HashMap;
 use bevy::{
     asset::RenderAssetUsages,
     camera::RenderTarget,
+    image::ImageSampler,
     prelude::*,
     render::{
         RenderPlugin,
         pipelined_rendering::PipelinedRenderingPlugin,
-        render_resource::TextureFormat,
+        render_resource::{Extent3d, TextureDimension, TextureFormat},
         view::{DebandDither, Tonemapping},
     },
     ui::UiSystems,
@@ -49,9 +50,9 @@ struct Caption;
 
 #[derive(Component)]
 struct FileVisual {
-    frame: Entity,
-    spine: Entity,
-    kind: usize,
+    membership: Entity,
+    glyph: Entity,
+    glyph_kind: usize,
     halo: Entity,
     author: Option<usize>,
 }
@@ -62,12 +63,15 @@ struct Palette {
     cube: Handle<Mesh>,
     sphere: Handle<Mesh>,
     beam: Handle<Mesh>,
-    paper: Handle<StandardMaterial>,
     edge: Handle<StandardMaterial>,
     grid: Handle<StandardMaterial>,
     descending: Handle<StandardMaterial>,
     rising: Handle<StandardMaterial>,
-    spines: Vec<Handle<StandardMaterial>>,
+    membership_mesh: Handle<Mesh>,
+    activity_mesh: Handle<Mesh>,
+    tile: Option<(Handle<StandardMaterial>, Transform)>,
+    glyph_mesh: Handle<Mesh>,
+    glyphs: Vec<Handle<StandardMaterial>>,
     avatars: Vec<Handle<StandardMaterial>>,
     glass: Vec<Handle<StandardMaterial>>,
     directories: Vec<Vec<Handle<StandardMaterial>>>,
@@ -79,17 +83,39 @@ impl Palette {
         let cube = meshes.add(Cuboid::default());
         let sphere = meshes.add(Sphere::new(theme.avatar_radius));
         let beam = meshes.add(Cylinder::new(0.035, 1.0));
+        let glyph_mesh = meshes.add(Rectangle::default());
+        let membership_mesh = meshes.add(Annulus::new(
+            theme.membership_radii.x,
+            theme.membership_radii.y,
+        ));
+        let activity_mesh =
+            meshes.add(Annulus::new(theme.activity_radii.x, theme.activity_radii.y));
+        let textures: Vec<_> = theme
+            .glyphs
+            .iter()
+            .map(|glyph| {
+                let image = glyph_image(glyph.svg, theme.glyph_texture);
+                world.resource_mut::<Assets<Image>>().add(image)
+            })
+            .collect();
         let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
-        let paper = materials.add(theme.paper.clone());
+        let glyphs = textures
+            .into_iter()
+            .map(|texture| {
+                materials.add(StandardMaterial {
+                    base_color_texture: Some(texture),
+                    ..theme.glyph_material.clone()
+                })
+            })
+            .collect();
+        let tile = theme
+            .file_tile
+            .as_ref()
+            .map(|tile| (materials.add(tile.material.clone()), tile.transform));
         let edge = materials.add(theme.edge.clone());
         let grid = materials.add(theme.grid.clone());
         let descending = materials.add(theme.descending.clone());
         let rising = materials.add(theme.rising.clone());
-        let spines = theme
-            .spines
-            .each_ref()
-            .map(|material| materials.add(material.clone()))
-            .to_vec();
         let avatars = theme
             .avatars
             .each_ref()
@@ -115,12 +141,15 @@ impl Palette {
             cube,
             sphere,
             beam,
-            paper,
             edge,
             grid,
             descending,
             rising,
-            spines,
+            membership_mesh,
+            activity_mesh,
+            tile,
+            glyph_mesh,
+            glyphs,
             avatars,
             glass,
             directories,
@@ -373,7 +402,7 @@ fn sync_files(
     });
     for (id, file) in layout.files() {
         let entity = *pools.files.entry(id).or_insert_with(|| {
-            spawn_file(world, palette, Theme::spine_kind(file.extension()))
+            spawn_file(world, palette, palette.theme.glyph_kind(file.name()))
         });
         let position = Vec3::new(file.position.x, 0.0, file.position.y);
         if let Some(mut transform) = world.get_mut::<Transform>(entity) {
@@ -383,25 +412,25 @@ fn sync_files(
         let visual = world
             .get::<FileVisual>(entity)
             .expect("file entities are visuals");
-        let (halo, current, frame) = (visual.halo, visual.author, visual.frame);
-        let kind = Theme::spine_kind(file.extension());
-        if visual.kind != kind {
-            let spine = visual.spine;
+        let (halo, current, membership) =
+            (visual.halo, visual.author, visual.membership);
+        let glyph_kind = palette.theme.glyph_kind(file.name());
+        if visual.glyph_kind != glyph_kind {
+            let glyph = visual.glyph;
             world
-                .entity_mut(spine)
-                .insert(MeshMaterial3d(palette.spines[kind].clone()));
+                .entity_mut(glyph)
+                .insert(MeshMaterial3d(palette.glyphs[glyph_kind].clone()));
             world
                 .get_mut::<FileVisual>(entity)
                 .expect("file entities are visuals")
-                .kind = kind;
+                .glyph_kind = glyph_kind;
         }
         let dir = layout.dir(file.dir);
-        let material = if dir.parent.is_none() {
-            &palette.paper
-        } else {
-            palette.directory(pools.hues.slots[file.dir], dir.depth)
-        };
-        set_material(world, frame, material);
+        set_material(
+            world,
+            membership,
+            palette.directory(pools.hues.slots[file.dir], dir.depth),
+        );
         let glowing = file.heat > 0.03;
         if glowing && current != Some(file.author) {
             world.entity_mut(halo).insert(MeshMaterial3d(
@@ -413,63 +442,154 @@ fn sync_files(
                 .author = Some(file.author);
         }
         if let Some(mut transform) = world.get_mut::<Transform>(halo) {
-            let grow = 1.0 + 0.45 * file.heat;
-            transform.scale = Vec3::new(0.5 * grow, 0.02, 0.62 * grow);
+            let grow = 1.0 + palette.theme.activity_growth * file.heat;
+            *transform = palette.theme.activity_transform;
+            transform.scale *= Vec3::new(grow, grow, 1.0);
         }
         set_visible(world, halo, glowing);
     }
 }
 
-fn spawn_file(world: &mut World, palette: &Palette, kind: usize) -> Entity {
-    let frame = block(
-        world,
-        &palette.cube,
-        &palette.paper,
-        palette.theme.file_frame_position,
-        palette.theme.file_frame_scale,
+fn glyph_image(svg: &str, settings: crate::theme::GlyphTexture) -> Image {
+    assert!(
+        settings.size.is_power_of_two(),
+        "glyph size is a positive power of two"
     );
-    let paper = block(
-        world,
-        &palette.cube,
-        &palette.paper,
-        palette.theme.file_face_position,
-        palette.theme.file_face_scale,
+    assert!(
+        (0.0..0.5).contains(&settings.padding),
+        "glyph padding leaves space for artwork"
     );
-    let spine = block(
-        world,
-        &palette.cube,
-        &palette.spines[kind],
-        palette.theme.file_spine_position,
-        palette.theme.file_spine_scale,
+    let tree = resvg::usvg::Tree::from_str(svg, &resvg::usvg::Options::default())
+        .expect("vendored SVG glyphs are valid");
+    let probe_size = settings.size.max(32);
+    let probe_scale =
+        f32::from(probe_size) / tree.size().width().max(tree.size().height());
+    let mut probe =
+        resvg::tiny_skia::Pixmap::new(u32::from(probe_size), u32::from(probe_size))
+            .expect("glyph probe dimensions fit memory");
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(probe_scale, probe_scale),
+        &mut probe.as_mut(),
     );
-    let ink = block(
-        world,
-        &palette.cube,
-        &palette.edge,
-        Vec3::new(0.03, 0.09, -0.12),
-        Vec3::new(0.26, 0.015, 0.03),
+    let mut low = (probe_size, probe_size);
+    let mut high = (0, 0);
+    for (index, pixel) in probe.pixels().iter().enumerate() {
+        if pixel.alpha() == 0 {
+            continue;
+        }
+        let x =
+            u16::try_from(index % usize::from(probe_size)).expect("probe column fits");
+        let y = u16::try_from(index / usize::from(probe_size)).expect("probe row fits");
+        low = (low.0.min(x), low.1.min(y));
+        high = (high.0.max(x + 1), high.1.max(y + 1));
+    }
+    assert!(
+        high.0 > low.0 && high.1 > low.1,
+        "glyph has visible artwork"
     );
-    let halo = block(
-        world,
-        &palette.cube,
-        &palette.glass[0],
-        Vec3::new(0.0, 0.01, 0.0),
-        Vec3::ONE,
+    let bounds = Rect::from_corners(
+        Vec2::new(f32::from(low.0), f32::from(low.1)) / probe_scale,
+        Vec2::new(f32::from(high.0), f32::from(high.1)) / probe_scale,
     );
-    world.entity_mut(halo).insert(Visibility::Hidden);
+    let levels = if settings.mipmaps {
+        settings.size.ilog2() + 1
+    } else {
+        1
+    };
+    let mut pixels = Vec::new();
+    for level in 0..levels {
+        let size = settings.size >> level;
+        let extent = f32::from(size);
+        let scale = extent * (1.0 - 2.0 * settings.padding)
+            / bounds.width().max(bounds.height());
+        let transform = resvg::tiny_skia::Transform::from_row(
+            scale,
+            0.0,
+            0.0,
+            scale,
+            (extent - bounds.width() * scale) * 0.5 - bounds.min.x * scale,
+            (extent - bounds.height() * scale) * 0.5 - bounds.min.y * scale,
+        );
+        let mut pixmap =
+            resvg::tiny_skia::Pixmap::new(u32::from(size), u32::from(size))
+                .expect("glyph texture dimensions fit memory");
+        resvg::render(&tree, transform, &mut pixmap.as_mut());
+        for pixel in pixmap.pixels() {
+            let color = pixel.demultiply();
+            pixels.extend_from_slice(&[
+                color.red(),
+                color.green(),
+                color.blue(),
+                color.alpha(),
+            ]);
+        }
+    }
+    let size = u32::from(settings.size);
+    let mut image = Image::new_uninit(
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_descriptor.mip_level_count = levels;
+    image.sampler = ImageSampler::linear();
+    image.data = Some(pixels);
+    image
+}
+
+fn spawn_file(world: &mut World, palette: &Palette, glyph_kind: usize) -> Entity {
+    let membership = world
+        .spawn((
+            Mesh3d(palette.membership_mesh.clone()),
+            MeshMaterial3d(palette.edge.clone()),
+            palette.theme.membership_transform,
+        ))
+        .id();
+    let glyph = world
+        .spawn((
+            Mesh3d(palette.glyph_mesh.clone()),
+            MeshMaterial3d(palette.glyphs[glyph_kind].clone()),
+            palette.theme.file_glyph_transform,
+        ))
+        .id();
+    let halo = world
+        .spawn((
+            Mesh3d(palette.activity_mesh.clone()),
+            MeshMaterial3d(palette.glass[0].clone()),
+            palette.theme.activity_transform,
+            Visibility::Hidden,
+        ))
+        .id();
+    let mut children = vec![membership, glyph, halo];
+    if let Some((material, transform)) = &palette.tile {
+        children.push(
+            world
+                .spawn((
+                    Mesh3d(palette.cube.clone()),
+                    MeshMaterial3d(material.clone()),
+                    *transform,
+                ))
+                .id(),
+        );
+    }
     world
         .spawn((
             Transform::default(),
             Visibility::default(),
             FileVisual {
-                frame,
-                spine,
-                kind,
+                membership,
+                glyph,
+                glyph_kind,
                 halo,
                 author: None,
             },
         ))
-        .add_children(&[frame, paper, spine, ink, halo])
+        .add_children(&children)
         .id()
 }
 
@@ -843,6 +963,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn svg_glyphs_render_into_complete_colour_mip_chains() {
+        for glyph in Theme::neon().glyphs {
+            let image = glyph_image(glyph.svg, Theme::neon().glyph_texture);
+            assert_eq!((image.width(), image.height()), (256, 256));
+            assert_eq!(image.texture_descriptor.mip_level_count, 9);
+            assert_eq!(image.data.as_ref().expect("glyph pixels").len(), 349_524);
+            assert_eq!(
+                image.texture_descriptor.format,
+                TextureFormat::Rgba8UnormSrgb
+            );
+        }
+        let theme = Theme::neon();
+        let rust = glyph_image(
+            theme.glyphs[theme.glyph_kind("main.rs")].svg,
+            theme.glyph_texture,
+        );
+        assert!(
+            rust.data
+                .expect("Rust pixels")
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|pixel| pixel[0] > pixel[1]
+                    && pixel[1] > pixel[2]
+                    && pixel[3] == 255)
+        );
+    }
+
+    #[test]
+    fn svg_texture_settings_control_resolution_mips_and_straight_alpha() {
+        let mut settings = Theme::neon().glyph_texture;
+        settings.size = 8;
+        settings.mipmaps = false;
+        settings.padding = 0.0;
+        let image = glyph_image(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 16 16">
+            <path d="M0 0h24v24H0z"/>
+            <path d="M1 1h14v14H1z" fill="#ff0000" opacity="0.5"/></svg>"##,
+            settings,
+        );
+        assert_eq!((image.width(), image.height()), (8, 8));
+        assert_eq!(image.texture_descriptor.mip_level_count, 1);
+        let pixels = image.data.expect("SVG pixels");
+        assert_eq!(pixels.len(), 8 * 8 * 4);
+        assert_eq!(&pixels[..4], &[255, 0, 0, 128]);
+    }
+
+    #[test]
+    fn theme_can_choose_different_art_tint_and_tiles() {
+        let mut theme = Theme::neon();
+        theme.glyphs = &theme.glyphs[..1];
+        theme.glyph_material.base_color = Color::BLACK;
+        theme.file_tile = Some(crate::theme::FileTile {
+            material: StandardMaterial {
+                base_color: Color::WHITE,
+                unlit: true,
+                ..default()
+            },
+            transform: Transform::from_xyz(0.0, 0.05, 0.0)
+                .with_scale(Vec3::new(0.46, 0.06, 0.58)),
+        });
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<Image>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let palette = Palette::new(&mut world, &theme);
+        let entity = spawn_file(&mut world, &palette, theme.glyph_kind("main.rs"));
+        let children = world.get::<Children>(entity).expect("file children");
+        assert_eq!(children.len(), 4);
+        let tile = *children.last().expect("tile child");
+        assert_eq!(
+            world.get::<Transform>(tile),
+            Some(&theme.file_tile.as_ref().expect("tile style").transform)
+        );
+        let material = world
+            .resource::<Assets<StandardMaterial>>()
+            .get(&palette.glyphs[0])
+            .expect("glyph material");
+        assert_eq!(material.base_color, Color::BLACK);
+        assert_eq!(palette.glyphs.len(), 1);
+    }
+
+    #[test]
     fn subtree_slots_include_retired_directories_and_survive_reappearance() {
         let mut layout = Layout::default();
         layout.add("early/deep/a.rs", 0.0, 0);
@@ -873,6 +1076,7 @@ mod tests {
     fn structure_reuses_materials_across_depth_growth_pool_reuse_and_rewind() {
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<Image>>();
         world.init_resource::<Assets<StandardMaterial>>();
         let theme = Theme::neon();
         let palette = Palette::new(&mut world, &theme);
@@ -930,7 +1134,80 @@ mod tests {
     }
 
     #[test]
-    fn file_frames_follow_subtree_moves_and_keep_language_spines() {
+    fn renamed_files_switch_icons_without_replacing_the_file() {
+        use crate::timeline::{Event, FileChange, Kind};
+
+        let paths = ["file.rs", "file.py", "unknown.xyz", "Dockerfile"];
+        let events: Vec<_> = paths
+            .iter()
+            .enumerate()
+            .map(|(index, path)| Event {
+                author: "Ada".to_owned(),
+                seconds: i64::try_from(index).expect("small fixture"),
+                changes: vec![FileChange {
+                    path: (*path).to_owned(),
+                    kind: if index == 0 {
+                        Kind::Added
+                    } else {
+                        Kind::Moved {
+                            from: paths[index - 1].to_owned(),
+                        }
+                    },
+                    insertions: 0,
+                    removals: 0,
+                }],
+            })
+            .collect();
+        let mut simulation =
+            Simulation::new(&events, &model::Options::default(), &Theme::neon());
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<Image>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let palette = Palette::new(&mut world, &Theme::neon());
+        let material_count = world.resource::<Assets<StandardMaterial>>().len();
+        let image_count = world.resource::<Assets<Image>>().len();
+        let mut pools = Pools::default();
+        let mut original = None;
+        for (frame, name) in [
+            (18, paths[0]),
+            (33, paths[1]),
+            (48, paths[2]),
+            (63, paths[3]),
+            (18, paths[0]),
+        ] {
+            simulation.advance_to(frame, 30);
+            sync_files(&mut world, &palette, &mut pools, &simulation);
+            let entity = pools.files[&0];
+            assert_eq!(*original.get_or_insert(entity), entity);
+            let visual = world.get::<FileVisual>(entity).expect("file visual");
+            let kind = palette.theme.glyph_kind(name);
+            assert_eq!(visual.glyph_kind, kind);
+            assert_eq!(
+                world
+                    .get::<MeshMaterial3d<StandardMaterial>>(visual.glyph)
+                    .expect("glyph material")
+                    .0,
+                palette.glyphs[kind]
+            );
+            assert_eq!(
+                world.get::<Transform>(visual.glyph),
+                Some(&palette.theme.file_glyph_transform)
+            );
+            assert_eq!(
+                world.get::<Children>(entity).expect("file children").len(),
+                3
+            );
+            assert_eq!(
+                world.resource::<Assets<StandardMaterial>>().len(),
+                material_count
+            );
+            assert_eq!(world.resource::<Assets<Image>>().len(), image_count);
+        }
+    }
+
+    #[test]
+    fn membership_rings_follow_subtree_moves_and_keep_file_icons() {
         use crate::timeline::{Event, FileChange, Kind};
 
         let events = [
@@ -961,6 +1238,7 @@ mod tests {
             Simulation::new(&events, &model::Options::default(), &Theme::neon());
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<Image>>();
         world.init_resource::<Assets<StandardMaterial>>();
         let palette = Palette::new(&mut world, &Theme::neon());
         let materials = world.resource::<Assets<StandardMaterial>>().len();
@@ -973,17 +1251,17 @@ mod tests {
             let visual = world.get::<FileVisual>(entity).expect("file has a visual");
             assert_eq!(
                 &world
-                    .get::<MeshMaterial3d<StandardMaterial>>(visual.frame)
-                    .expect("frame has a material")
+                    .get::<MeshMaterial3d<StandardMaterial>>(visual.membership)
+                    .expect("membership ring material")
                     .0,
                 palette.directory(slot, 1),
             );
             assert_eq!(
                 world
-                    .get::<MeshMaterial3d<StandardMaterial>>(visual.spine)
-                    .expect("spine has a material")
+                    .get::<MeshMaterial3d<StandardMaterial>>(visual.glyph)
+                    .expect("file icon material")
                     .0,
-                palette.spines[Theme::spine_kind("rs")],
+                palette.glyphs[palette.theme.glyph_kind("a.rs")]
             );
             assert_eq!(
                 world.resource::<Assets<StandardMaterial>>().len(),
