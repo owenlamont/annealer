@@ -49,6 +49,7 @@ struct Caption;
 
 #[derive(Component)]
 struct FileVisual {
+    frame: Entity,
     spine: Entity,
     kind: usize,
     halo: Entity,
@@ -362,6 +363,7 @@ fn sync_files(
     simulation: &Simulation,
 ) {
     let layout = simulation.layout();
+    pools.hues.sync(layout);
     pools.files.retain(|id, entity| {
         let keep = layout.file(*id).is_some();
         if !keep {
@@ -381,7 +383,7 @@ fn sync_files(
         let visual = world
             .get::<FileVisual>(entity)
             .expect("file entities are visuals");
-        let (halo, current) = (visual.halo, visual.author);
+        let (halo, current, frame) = (visual.halo, visual.author, visual.frame);
         let kind = Theme::spine_kind(file.extension());
         if visual.kind != kind {
             let spine = visual.spine;
@@ -393,6 +395,13 @@ fn sync_files(
                 .expect("file entities are visuals")
                 .kind = kind;
         }
+        let dir = layout.dir(file.dir);
+        let material = if dir.parent.is_none() {
+            &palette.paper
+        } else {
+            palette.directory(pools.hues.slots[file.dir], dir.depth)
+        };
+        set_material(world, frame, material);
         let glowing = file.heat > 0.03;
         if glowing && current != Some(file.author) {
             world.entity_mut(halo).insert(MeshMaterial3d(
@@ -412,19 +421,26 @@ fn sync_files(
 }
 
 fn spawn_file(world: &mut World, palette: &Palette, kind: usize) -> Entity {
+    let frame = block(
+        world,
+        &palette.cube,
+        &palette.paper,
+        palette.theme.file_frame_position,
+        palette.theme.file_frame_scale,
+    );
     let paper = block(
         world,
         &palette.cube,
         &palette.paper,
-        Vec3::new(0.0, 0.05, 0.0),
-        Vec3::new(0.46, 0.06, 0.58),
+        palette.theme.file_face_position,
+        palette.theme.file_face_scale,
     );
     let spine = block(
         world,
         &palette.cube,
         &palette.spines[kind],
-        Vec3::new(-0.19, 0.09, 0.0),
-        Vec3::new(0.05, 0.02, 0.5),
+        palette.theme.file_spine_position,
+        palette.theme.file_spine_scale,
     );
     let ink = block(
         world,
@@ -446,13 +462,14 @@ fn spawn_file(world: &mut World, palette: &Palette, kind: usize) -> Entity {
             Transform::default(),
             Visibility::default(),
             FileVisual {
+                frame,
                 spine,
                 kind,
                 halo,
                 author: None,
             },
         ))
-        .add_children(&[paper, spine, ink, halo])
+        .add_children(&[frame, paper, spine, ink, halo])
         .id()
 }
 
@@ -472,6 +489,7 @@ fn sync_structure(
                 ground(parent.position) - Vec3::Y * 0.05,
                 ground(dir.position) - Vec3::Y * 0.05,
                 palette.directory(pools.hues.slots[index], dir.depth),
+                palette.theme.directory_edge_width(dir.depth),
             ))
         })
         .collect();
@@ -479,11 +497,21 @@ fn sync_structure(
         world,
         &mut pools.edges,
         edges.len(),
-        &palette.beam,
+        &palette.cube,
         &palette.edge,
     );
-    for (entity, (from, to, material)) in pool.iter().zip(&edges) {
-        place_beam(world, *entity, *from, *to, 0.6);
+    for (entity, (from, to, material, width)) in pool.iter().zip(&edges) {
+        if let Some(mut transform) = world.get_mut::<Transform>(*entity) {
+            let delta = *to - *from;
+            *transform = Transform::from_translation(from.midpoint(*to))
+                .looking_to(delta.normalize_or(Vec3::Z), Vec3::Y)
+                .with_scale(Vec3::new(
+                    *width,
+                    palette.theme.directory_edge_height,
+                    delta.length(),
+                ));
+        }
+        set_visible(world, *entity, true);
         set_material(world, *entity, material);
     }
     hide_rest(world, pool, edges.len());
@@ -509,6 +537,10 @@ fn sync_structure(
         set_visible(world, *entity, true);
     }
     hide_rest(world, pool, dirs.len());
+    sync_grid(world, pools, simulation);
+}
+
+fn sync_grid(world: &mut World, pools: &Pools, simulation: &Simulation) {
     let (focus, distance) = simulation.view();
     let extent = distance * 0.5;
     let spacing = 2.0_f32.powf((extent / 4.0).log2().ceil().max(0.0));
@@ -847,6 +879,7 @@ mod tests {
             Simulation::new(&crate::timeline::synthetic(), &model::Options::default());
         for frame in [0, 18, 120, 240, 0, 240] {
             simulation.advance_to(frame, 30);
+            sync_files(&mut world, &palette, &mut pools, &simulation);
             sync_structure(&mut world, &palette, &mut pools, &simulation);
             assert_eq!(
                 world.resource::<Assets<StandardMaterial>>().len(),
@@ -888,5 +921,67 @@ mod tests {
             palette.directory(0, 1),
             palette.directory(theme.directories.len(), 1)
         );
+    }
+
+    #[test]
+    fn file_frames_follow_subtree_moves_and_keep_language_spines() {
+        use crate::timeline::{Event, FileChange, Kind};
+
+        let events = [
+            Event {
+                author: "Ada".to_owned(),
+                seconds: 0,
+                changes: vec![FileChange {
+                    path: "alpha/a.rs".to_owned(),
+                    kind: Kind::Added,
+                    insertions: 1,
+                    removals: 0,
+                }],
+            },
+            Event {
+                author: "Ada".to_owned(),
+                seconds: 1,
+                changes: vec![FileChange {
+                    path: "beta/a.rs".to_owned(),
+                    kind: Kind::Moved {
+                        from: "alpha/a.rs".to_owned(),
+                    },
+                    insertions: 0,
+                    removals: 0,
+                }],
+            },
+        ];
+        let mut simulation = Simulation::new(&events, &model::Options::default());
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let palette = Palette::new(&mut world, &Theme::neon());
+        let materials = world.resource::<Assets<StandardMaterial>>().len();
+        let mut pools = Pools::default();
+        for (frame, slot) in [(18, 0), (45, 1), (18, 0), (45, 1)] {
+            simulation.advance_to(frame, 30);
+            sync_files(&mut world, &palette, &mut pools, &simulation);
+            assert_eq!(pools.files.len(), 1);
+            let entity = pools.files[&0];
+            let visual = world.get::<FileVisual>(entity).expect("file has a visual");
+            assert_eq!(
+                &world
+                    .get::<MeshMaterial3d<StandardMaterial>>(visual.frame)
+                    .expect("frame has a material")
+                    .0,
+                palette.directory(slot, 1),
+            );
+            assert_eq!(
+                world
+                    .get::<MeshMaterial3d<StandardMaterial>>(visual.spine)
+                    .expect("spine has a material")
+                    .0,
+                palette.spines[Theme::spine_kind("rs")],
+            );
+            assert_eq!(
+                world.resource::<Assets<StandardMaterial>>().len(),
+                materials,
+            );
+        }
     }
 }

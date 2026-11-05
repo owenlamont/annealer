@@ -14,6 +14,14 @@ pub(super) struct Theme {
     pub(super) glass: [StandardMaterial; 6],
     pub(super) directories: Vec<Vec<StandardMaterial>>,
     pub(super) directory_node_scale: Vec3,
+    pub(super) directory_edge_widths: Vec<f32>,
+    pub(super) directory_edge_height: f32,
+    pub(super) file_frame_position: Vec3,
+    pub(super) file_frame_scale: Vec3,
+    pub(super) file_face_position: Vec3,
+    pub(super) file_face_scale: Vec3,
+    pub(super) file_spine_position: Vec3,
+    pub(super) file_spine_scale: Vec3,
     pub(super) label: Color,
     pub(super) label_background: Color,
     pub(super) heading: Color,
@@ -66,7 +74,7 @@ impl Theme {
                 355.0, 245.0,
             ]
             .map(|hue| {
-                [(0.52, 0.27), (0.48, 0.30), (0.44, 0.33), (0.40, 0.36)]
+                [(0.65, 0.52), (0.62, 0.49), (0.58, 0.46), (0.54, 0.43)]
                     .map(|(saturation, lightness)| {
                         solid(Color::hsl(hue, saturation, lightness))
                     })
@@ -74,12 +82,25 @@ impl Theme {
             })
             .to_vec(),
             directory_node_scale: Vec3::new(0.24, 0.04, 0.24),
+            directory_edge_widths: vec![0.20, 0.15, 0.11, 0.08],
+            directory_edge_height: 0.025,
+            file_frame_position: Vec3::new(0.0, 0.05, 0.0),
+            file_frame_scale: Vec3::new(0.46, 0.06, 0.58),
+            file_face_position: Vec3::new(0.0, 0.085, 0.0),
+            file_face_scale: Vec3::new(0.34, 0.01, 0.46),
+            file_spine_position: Vec3::new(-0.13, 0.09, 0.0),
+            file_spine_scale: Vec3::new(0.05, 0.02, 0.40),
             label: Color::srgb(0.72, 0.83, 0.9),
             label_background: Color::srgba(0.008, 0.016, 0.03, 0.72),
             heading: Color::srgb(0.65, 0.8, 0.87),
             label_emphasis: Color::srgb(0.88, 0.95, 1.0),
             label_landmark: Color::srgb(0.62, 0.86, 0.95),
         }
+    }
+
+    pub(super) fn directory_edge_width(&self, depth: u16) -> f32 {
+        self.directory_edge_widths[usize::from(depth.saturating_sub(1))
+            .min(self.directory_edge_widths.len() - 1)]
     }
 
     pub(super) fn spine_kind(extension: &str) -> usize {
@@ -92,5 +113,25 @@ impl Theme {
             "sh" | "ps1" | "nix" | "snap" => 5,
             _ => 6,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trunks_are_wider_and_spines_have_pale_backing() {
+        let theme = Theme::neon();
+        assert!(theme.directory_edge_width(1) > theme.directory_edge_width(4));
+        assert_eq!(
+            theme.directory_edge_width(4),
+            theme.directory_edge_width(u16::MAX)
+        );
+        let face_left = theme.file_face_position.x - theme.file_face_scale.x * 0.5;
+        let face_right = theme.file_face_position.x + theme.file_face_scale.x * 0.5;
+        let spine_half_width = theme.file_spine_scale.x * 0.5;
+        assert!(theme.file_spine_position.x - spine_half_width > face_left);
+        assert!(theme.file_spine_position.x + spine_half_width < face_right);
     }
 }
