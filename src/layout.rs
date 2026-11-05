@@ -37,12 +37,6 @@ impl File {
     pub(super) fn name(&self) -> &str {
         self.path.rsplit('/').next().unwrap_or(&self.path)
     }
-
-    pub(super) fn extension(&self) -> &str {
-        self.name()
-            .rsplit_once('.')
-            .map_or("", |(_, extension)| extension)
-    }
 }
 
 #[derive(Clone, Debug)]

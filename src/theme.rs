@@ -8,33 +8,31 @@ pub(super) struct Geometry {
     pub avatar_label_offset: Vec3,
     pub label_height: f32,
 }
+mod material;
 
 #[derive(Clone)]
 pub(super) struct Theme {
     pub(super) glyphs: &'static [FileGlyph],
     pub(super) glyph_material: StandardMaterial,
     pub(super) file_glyph_transform: Transform,
-    pub(super) fallback_glyph_transform: Transform,
+    pub(super) file_tile: Option<FileTile>,
+    pub(super) membership_radii: Vec2,
+    pub(super) membership_transform: Transform,
+    pub(super) activity_radii: Vec2,
+    pub(super) activity_transform: Transform,
+    pub(super) activity_growth: f32,
     pub(super) clear: Color,
-    pub(super) paper: StandardMaterial,
     pub(super) edge: StandardMaterial,
     pub(super) grid: StandardMaterial,
     pub(super) descending: StandardMaterial,
     pub(super) rising: StandardMaterial,
     pub(super) floor: StandardMaterial,
-    pub(super) spines: [StandardMaterial; 7],
     pub(super) avatars: [StandardMaterial; 6],
     pub(super) glass: [StandardMaterial; 6],
     pub(super) directories: Vec<Vec<StandardMaterial>>,
     pub(super) directory_node_scale: Vec3,
     pub(super) directory_edge_widths: Vec<f32>,
     pub(super) directory_edge_height: f32,
-    pub(super) file_frame_position: Vec3,
-    pub(super) file_frame_scale: Vec3,
-    pub(super) file_face_position: Vec3,
-    pub(super) file_face_scale: Vec3,
-    pub(super) file_spine_position: Vec3,
-    pub(super) file_spine_scale: Vec3,
     pub(super) label: Color,
     pub(super) label_background: Color,
     pub(super) heading: Color,
@@ -51,74 +49,11 @@ pub(super) struct FileGlyph {
     extensions: &'static [&'static str],
 }
 
-const FILE_GLYPHS: &[FileGlyph] = &[
-    FileGlyph {
-        png: include_bytes!("../assets/seti/png/default.png"),
-        filenames: &[],
-        extensions: &[],
-    },
-    FileGlyph {
-        png: include_bytes!("../assets/seti/png/rust.png"),
-        filenames: &[],
-        extensions: &["rs"],
-    },
-    FileGlyph {
-        png: include_bytes!("../assets/seti/png/python.png"),
-        filenames: &[],
-        extensions: &["py", "pyi", "ipynb"],
-    },
-    FileGlyph {
-        png: include_bytes!("../assets/seti/png/config.png"),
-        filenames: &["Cargo.toml", ".editorconfig", ".gitignore"],
-        extensions: &["toml", "cfg", "ini"],
-    },
-    FileGlyph {
-        png: include_bytes!("../assets/seti/png/yml.png"),
-        filenames: &[],
-        extensions: &["yml", "yaml"],
-    },
-    FileGlyph {
-        png: include_bytes!("../assets/seti/png/markdown.png"),
-        filenames: &["README.md"],
-        extensions: &["md", "markdown"],
-    },
-    FileGlyph {
-        png: include_bytes!("../assets/seti/png/json.png"),
-        filenames: &[],
-        extensions: &["json", "jsonc"],
-    },
-    FileGlyph {
-        png: include_bytes!("../assets/seti/png/javascript.png"),
-        filenames: &[],
-        extensions: &["js", "jsx", "mjs", "cjs"],
-    },
-    FileGlyph {
-        png: include_bytes!("../assets/seti/png/typescript.png"),
-        filenames: &[],
-        extensions: &["ts", "tsx", "mts", "cts"],
-    },
-    FileGlyph {
-        png: include_bytes!("../assets/seti/png/shell.png"),
-        filenames: &[".bashrc", ".zshrc"],
-        extensions: &["sh", "bash", "zsh", "fish", "ps1"],
-    },
-    FileGlyph {
-        png: include_bytes!("../assets/seti/png/lock.png"),
-        filenames: &[
-            "Cargo.lock",
-            "package-lock.json",
-            "yarn.lock",
-            "pnpm-lock.yaml",
-            "uv.lock",
-        ],
-        extensions: &["lock"],
-    },
-    FileGlyph {
-        png: include_bytes!("../assets/seti/png/docker.png"),
-        filenames: &["Dockerfile", "Containerfile"],
-        extensions: &["dockerfile"],
-    },
-];
+#[derive(Clone)]
+pub(super) struct FileTile {
+    pub(super) material: StandardMaterial,
+    pub(super) transform: Transform,
+}
 
 impl Theme {
     pub(super) fn neon() -> Self {
@@ -136,36 +71,30 @@ impl Theme {
             ..default()
         };
         Self {
-            glyphs: FILE_GLYPHS,
+            glyphs: material::GLYPHS,
             glyph_material: StandardMaterial {
-                base_color: Color::srgb(0.025, 0.055, 0.085),
+                base_color: Color::WHITE,
                 alpha_mode: AlphaMode::Blend,
                 unlit: true,
                 ..default()
             },
             file_glyph_transform: Transform::from_xyz(0.0, 0.105, 0.0)
                 .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-                .with_scale(Vec3::new(0.32, 0.38, 1.0)),
-            fallback_glyph_transform: Transform::from_xyz(0.035, 0.105, 0.0)
-                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-                .with_scale(Vec3::new(0.23, 0.30, 1.0)),
+                .with_scale(Vec3::new(0.48, 0.48, 1.0)),
+            file_tile: None,
+            membership_radii: Vec2::new(0.255, 0.27),
+            membership_transform: Transform::from_xyz(0.0, 0.015, 0.0)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+            activity_radii: Vec2::new(0.29, 0.32),
+            activity_transform: Transform::from_xyz(0.0, 0.035, 0.0)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+            activity_growth: 0.45,
             clear: Color::srgb(0.012, 0.023, 0.04),
-            paper: solid(Color::srgb(0.64, 0.76, 0.85)),
             edge: solid(Color::srgb(0.09, 0.2, 0.28)),
             grid: solid(Color::srgb(0.045, 0.09, 0.13)),
             descending: solid(developers[0]),
             rising: solid(developers[1]),
             floor: solid(Color::srgb(0.02, 0.036, 0.06)),
-            spines: [
-                Color::srgb(1.0, 0.55, 0.25),
-                Color::srgb(0.35, 0.65, 1.0),
-                Color::srgb(0.85, 0.9, 0.95),
-                Color::srgb(0.45, 0.95, 0.55),
-                Color::srgb(1.0, 0.85, 0.3),
-                Color::srgb(0.9, 0.4, 0.9),
-                Color::srgb(0.45, 0.5, 0.58),
-            ]
-            .map(solid),
             avatars: developers.map(solid),
             glass: developers.map(|color| StandardMaterial {
                 base_color: color.with_alpha(0.32),
@@ -188,12 +117,6 @@ impl Theme {
             directory_node_scale: Vec3::new(0.24, 0.04, 0.24),
             directory_edge_widths: vec![0.20, 0.15, 0.11, 0.08],
             directory_edge_height: 0.025,
-            file_frame_position: Vec3::new(0.0, 0.05, 0.0),
-            file_frame_scale: Vec3::new(0.46, 0.06, 0.58),
-            file_face_position: Vec3::new(0.0, 0.085, 0.0),
-            file_face_scale: Vec3::new(0.34, 0.01, 0.46),
-            file_spine_position: Vec3::new(-0.13, 0.09, 0.0),
-            file_spine_scale: Vec3::new(0.05, 0.02, 0.40),
             label: Color::srgb(0.72, 0.83, 0.9),
             label_background: Color::srgba(0.008, 0.016, 0.03, 0.72),
             heading: Color::srgb(0.65, 0.8, 0.87),
@@ -206,22 +129,32 @@ impl Theme {
     }
 
     pub(super) fn geometry(&self) -> Geometry {
-        let (file_min, file_max) = [
-            (self.file_frame_position, self.file_frame_scale),
-            (self.file_face_position, self.file_face_scale),
-            (self.file_spine_position, self.file_spine_scale),
-            (Vec3::new(0.03, 0.09, -0.12), Vec3::new(0.26, 0.015, 0.03)),
+        let pieces = [
+            (self.file_glyph_transform, Vec3::new(0.5, 0.5, 0.0)),
+            (
+                self.membership_transform,
+                Vec3::new(self.membership_radii.y, self.membership_radii.y, 0.0),
+            ),
         ]
         .into_iter()
-        .fold(
-            (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
-            |(low, high), (position, scale)| {
-                (
-                    low.min(position - scale * 0.5),
-                    high.max(position + scale * 0.5),
-                )
-            },
+        .chain(
+            self.file_tile
+                .iter()
+                .map(|tile| (tile.transform, Vec3::splat(0.5))),
         );
+        let mut file_min = Vec3::splat(f32::MAX);
+        let mut file_max = Vec3::splat(f32::MIN);
+        for (transform, half) in pieces {
+            for x in [-half.x, half.x] {
+                for y in [-half.y, half.y] {
+                    for z in [-half.z, half.z] {
+                        let corner = transform.transform_point(Vec3::new(x, y, z));
+                        file_min = file_min.min(corner);
+                        file_max = file_max.max(corner);
+                    }
+                }
+            }
+        }
         Geometry {
             file_min,
             file_max,
@@ -239,29 +172,24 @@ impl Theme {
     pub(super) fn glyph_kind(&self, name: &str) -> usize {
         self.glyphs
             .iter()
-            .position(|glyph| glyph.filenames.contains(&name))
+            .position(|glyph| {
+                glyph
+                    .filenames
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(name))
+            })
             .or_else(|| {
-                let (_, extension) = name.rsplit_once('.')?;
-                self.glyphs.iter().position(|glyph| {
-                    glyph
-                        .extensions
-                        .iter()
-                        .any(|known| known.eq_ignore_ascii_case(extension))
+                name.match_indices('.').find_map(|(index, _)| {
+                    let extension = &name[index + 1..];
+                    self.glyphs.iter().position(|glyph| {
+                        glyph
+                            .extensions
+                            .iter()
+                            .any(|known| known.eq_ignore_ascii_case(extension))
+                    })
                 })
             })
             .unwrap_or(0)
-    }
-
-    pub(super) fn spine_kind(extension: &str) -> usize {
-        match extension {
-            "rs" | "c" | "cpp" | "h" | "go" => 0,
-            "py" | "pyi" | "ipynb" => 1,
-            "md" | "rst" | "txt" | "html" => 2,
-            "toml" | "yaml" | "yml" | "json" | "lock" | "cfg" | "ini" => 3,
-            "js" | "ts" | "tsx" | "jsx" | "mjs" => 4,
-            "sh" | "ps1" | "nix" | "snap" => 5,
-            _ => 6,
-        }
     }
 }
 
@@ -275,17 +203,17 @@ mod tests {
         for (name, equivalent) in [
             ("Cargo.toml", "settings.toml"),
             ("Cargo.lock", "deps.lock"),
-            ("README.md", "guide.md"),
+            ("README.MD", "readme"),
             ("Dockerfile", "image.dockerfile"),
             ("Containerfile", "Dockerfile"),
-            ("package-lock.json", "Cargo.lock"),
-            ("pnpm-lock.yaml", "Cargo.lock"),
-            (".gitignore", "settings.cfg"),
+            (".gitignore", "change.patch"),
             (".bashrc", "build.sh"),
             ("main.PY", "main.py"),
-            ("README.MD", "guide.md"),
             ("workflow.YML", "workflow.yaml"),
-            ("app.tsx", "app.ts"),
+            ("index.docker-compose.yml", "Dockerfile"),
+            ("file.h.in", "main.cpp"),
+            ("pyproject.toml", "py.typed"),
+            ("PNPM-LOCK.YAML", "pnpm-workspace.yaml"),
         ] {
             assert_ne!(theme.glyph_kind(name), 0, "{name}");
             assert_eq!(
@@ -294,7 +222,7 @@ mod tests {
                 "{name}"
             );
         }
-        for name in ["unknown.xyz", "LICENSE", "no_extension", "", ".unknown"] {
+        for name in ["unknown.xyz", "no_extension", "", ".unknown"] {
             assert_eq!(theme.glyph_kind(name), 0, "{name}");
         }
     }
@@ -315,7 +243,7 @@ mod tests {
                 );
             }
         }
-        let kinds = ["main.rs", "main.py", "Cargo.toml", "ci.yaml", "README.md"]
+        let kinds = ["main.rs", "main.py", "Cargo.toml", "ci.yaml", "guide.md"]
             .map(|name| theme.glyph_kind(name));
         assert_eq!(
             kinds
@@ -333,17 +261,15 @@ mod tests {
     }
 
     #[test]
-    fn trunks_are_wider_and_spines_have_pale_backing() {
+    fn neon_has_bare_untinted_icons_and_wider_trunks() {
         let theme = Theme::neon();
+        assert!(theme.file_tile.is_none());
+        assert_eq!(theme.glyph_material.base_color, Color::WHITE);
+        assert!(theme.glyph_material.unlit);
         assert!(theme.directory_edge_width(1) > theme.directory_edge_width(4));
         assert_eq!(
             theme.directory_edge_width(4),
             theme.directory_edge_width(u16::MAX)
         );
-        let face_left = theme.file_face_position.x - theme.file_face_scale.x * 0.5;
-        let face_right = theme.file_face_position.x + theme.file_face_scale.x * 0.5;
-        let spine_half_width = theme.file_spine_scale.x * 0.5;
-        assert!(theme.file_spine_position.x - spine_half_width > face_left);
-        assert!(theme.file_spine_position.x + spine_half_width < face_right);
     }
 }
