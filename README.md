@@ -81,7 +81,8 @@ already exist. Commits touching more than 24 files aim beams at directories inst
 
 Repository playback caches the latest first-parent timeline and diff counts as JSON
 under the platform user cache directory (`annealer/`), namespaced by a hash of the
-canonical repository path. A resolved commit ID and a format/import/timeline version
+canonical common Git directory, shared by linked worktrees. A resolved commit ID and
+a format/import/timeline version
 identify the snapshot; a different tip replaces the snapshot after a full import.
 Playback range and speed reuse the complete timeline. Cache failures regenerate
 without blocking playback; `--no-cache` skips cache reads and writes. Inspection
