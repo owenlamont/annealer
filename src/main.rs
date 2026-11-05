@@ -114,7 +114,10 @@ impl Source {
             start: self.start,
             commits: self.commits,
         };
-        Ok((model::Simulation::new(&events, &options), title))
+        Ok((
+            model::Simulation::new(&events, &options, &theme::Theme::neon()),
+            title,
+        ))
     }
 }
 

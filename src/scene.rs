@@ -77,7 +77,7 @@ impl Palette {
     fn new(world: &mut World, theme: &Theme) -> Self {
         let mut meshes = world.resource_mut::<Assets<Mesh>>();
         let cube = meshes.add(Cuboid::default());
-        let sphere = meshes.add(Sphere::new(0.22));
+        let sphere = meshes.add(Sphere::new(theme.avatar_radius));
         let beam = meshes.add(Cylinder::new(0.035, 1.0));
         let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
         let paper = materials.add(theme.paper.clone());
@@ -174,7 +174,7 @@ struct Pools {
 
 fn app(simulation: Simulation, title: String) -> App {
     let mut app = App::new();
-    let theme = Theme::neon();
+    let theme = simulation.theme().clone();
     app.insert_resource(ClearColor(theme.clear))
         .insert_resource(Playback(simulation))
         .insert_resource(Title(title))
@@ -254,7 +254,7 @@ fn setup(world: &mut World) {
             SceneCamera,
         ))
         .id();
-    let theme = Theme::neon();
+    let theme = world.resource::<Playback>().0.theme().clone();
     let palette = Palette::new(world, &theme);
     let floor = world
         .resource_mut::<Assets<StandardMaterial>>()
@@ -788,7 +788,10 @@ fn labels(world: &mut World) {
                 * f32::from(
                     u16::try_from(label.text.chars().count()).unwrap_or(u16::MAX),
                 );
-        let rect = Rect::from_corners(point, point + Vec2::new(width, 20.0));
+        let rect = Rect::from_corners(
+            point,
+            point + Vec2::new(width, playback.0.theme().label_height),
+        );
         if rect.min.x < 0.0
             || rect.min.y < 0.0
             || rect.max.x > 1280.0
@@ -875,8 +878,11 @@ mod tests {
         let palette = Palette::new(&mut world, &theme);
         let materials = world.resource::<Assets<StandardMaterial>>().len();
         let mut pools = Pools::default();
-        let mut simulation =
-            Simulation::new(&crate::timeline::synthetic(), &model::Options::default());
+        let mut simulation = Simulation::new(
+            &crate::timeline::synthetic(),
+            &model::Options::default(),
+            &theme,
+        );
         for frame in [0, 18, 120, 240, 0, 240] {
             simulation.advance_to(frame, 30);
             sync_files(&mut world, &palette, &mut pools, &simulation);
@@ -951,7 +957,8 @@ mod tests {
                 }],
             },
         ];
-        let mut simulation = Simulation::new(&events, &model::Options::default());
+        let mut simulation =
+            Simulation::new(&events, &model::Options::default(), &Theme::neon());
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
         world.init_resource::<Assets<StandardMaterial>>();
