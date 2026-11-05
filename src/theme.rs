@@ -145,15 +145,10 @@ impl Theme {
         let mut file_min = Vec3::splat(f32::MAX);
         let mut file_max = Vec3::splat(f32::MIN);
         for (transform, half) in pieces {
-            for x in [-half.x, half.x] {
-                for y in [-half.y, half.y] {
-                    for z in [-half.z, half.z] {
-                        let corner = transform.transform_point(Vec3::new(x, y, z));
-                        file_min = file_min.min(corner);
-                        file_max = file_max.max(corner);
-                    }
-                }
-            }
+            let world_half = Mat3::from_quat(transform.rotation).abs()
+                * (transform.scale * half).abs();
+            file_min = file_min.min(transform.translation - world_half);
+            file_max = file_max.max(transform.translation + world_half);
         }
         Geometry {
             file_min,
@@ -196,6 +191,31 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_bounds_follow_icons_rings_and_optional_tiles() {
+        let mut theme = Theme::neon();
+        let bare = theme.geometry();
+        assert!((bare.file_min - Vec3::new(-0.27, 0.015, -0.27)).length() < 0.000_001);
+        assert!((bare.file_max - Vec3::new(0.27, 0.105, 0.27)).length() < 0.000_001);
+        theme.file_tile = Some(FileTile {
+            material: StandardMaterial::default(),
+            transform: Transform::from_xyz(0.0, 0.4, 0.0)
+                .with_scale(Vec3::new(0.8, 0.2, 0.8)),
+        });
+        let tiled = theme.geometry();
+        assert!((tiled.file_min - Vec3::new(-0.4, 0.015, -0.4)).length() < 0.000_001);
+        assert!((tiled.file_max - Vec3::new(0.4, 0.5, 0.4)).length() < 0.000_001);
+        theme
+            .file_tile
+            .as_mut()
+            .expect("tile style")
+            .transform
+            .rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let rotated = theme.geometry();
+        assert!((rotated.file_min - Vec3::new(-0.27, 0.0, -0.4)).length() < 0.000_001);
+        assert!((rotated.file_max - Vec3::new(0.27, 0.8, 0.4)).length() < 0.000_001);
+    }
 
     #[test]
     fn filenames_override_extensions_and_unknowns_keep_the_fallback() {

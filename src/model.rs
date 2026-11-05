@@ -916,10 +916,10 @@ mod tests {
     }
 
     #[test]
-    fn clearance_uses_themes_tile_and_avatar_dimensions() {
+    fn clearance_uses_themes_file_and_avatar_dimensions() {
         let mut theme = Theme::neon();
-        theme.file_frame_position.y = 0.4;
-        theme.file_frame_scale *= 2.0;
+        theme.file_glyph_transform.translation.y = 0.4;
+        theme.file_glyph_transform.scale *= 2.0;
         theme.avatar_radius = 0.5;
         theme.label_height = 28.0;
         let mut sim =
