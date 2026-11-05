@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use bevy::math::Vec2;
 
@@ -9,9 +9,9 @@ const LOOK_AHEAD_COMMITS: usize = 128;
 const GAP: f32 = 0.3;
 pub(super) const RELEASE_RADIUS: f32 = 0.05;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct Plan {
-    occupancy: Vec<Vec<(usize, usize)>>,
+    occupancy: Arc<[Vec<(usize, usize)>]>,
     next_commit: usize,
 }
 
@@ -47,7 +47,7 @@ impl Plan {
             }
         }
         Self {
-            occupancy,
+            occupancy: occupancy.into(),
             next_commit: 0,
         }
     }
@@ -73,7 +73,7 @@ impl Plan {
 }
 
 impl Layout {
-    pub(super) fn relax_planned(&mut self, dt: f32) {
+    pub(super) fn relax(&mut self, dt: f32) {
         let mut live: Vec<_> = self.dirs().map(|(index, _)| index).collect();
         let mut radii = vec![0.0; self.dirs.len()];
         for &index in &live {
@@ -81,12 +81,7 @@ impl Layout {
             let target = if index != 0 && dir.files == 0 && dir.children == 0 {
                 0.0
             } else {
-                dir.radius().max(
-                    self.plan
-                        .as_ref()
-                        .expect("planned layout has a plan")
-                        .radius(index),
-                )
+                dir.radius().max(self.plan.radius(index))
             };
             dir.reserve += (target - dir.reserve) * (1.0 - (-dt / 0.2).exp());
             if dir.files > 0 {
@@ -164,21 +159,19 @@ impl Layout {
 
     /// Reserves peak concurrent occupancy over the next 128 commits, excluding past peaks.
     pub(crate) fn planned(events: &[Event]) -> Self {
-        let mut layout = Self::default();
+        let mut layout = Self::empty();
         let plan = Plan::new(&mut layout, events);
         for (index, dir) in layout.dirs.iter_mut().enumerate() {
             dir.live = index == 0;
             dir.activated = index == 0;
             dir.children = 0;
         }
-        layout.plan = Some(plan);
+        layout.plan = plan;
         layout
     }
 
     pub(crate) fn begin_commit(&mut self) {
-        if let Some(plan) = &mut self.plan {
-            plan.next_commit += 1;
-        }
+        self.plan.next_commit += 1;
     }
 }
 
@@ -216,14 +209,14 @@ mod tests {
         let mut layout = Layout::planned(&events);
         let old = layout.dir_index["old"];
         let late = layout.dir_index["late"];
-        let plan = layout.plan.as_ref().unwrap();
+        let plan = &layout.plan;
         assert_eq!(plan.radius(old), SPACING + 0.4);
         assert_eq!(plan.radius(late), 0.4);
         assert_eq!(layout.dirs().count(), 1);
         for _ in 0..=LOOK_AHEAD_COMMITS {
             layout.begin_commit();
         }
-        let plan = layout.plan.as_ref().unwrap();
+        let plan = &layout.plan;
         assert_eq!(plan.radius(old), 0.4);
         assert!(plan.radius(late) > SPACING + 0.4);
     }
@@ -240,8 +233,72 @@ mod tests {
             )]),
         ];
         let layout = Layout::planned(&events);
-        let plan = layout.plan.as_ref().unwrap();
+        let plan = &layout.plan;
         assert_eq!(plan.radius(layout.dir_index["b"]), SPACING + 0.4);
+    }
+
+    #[test]
+    fn cloned_layouts_share_occupancy_but_advance_cursors_independently() {
+        let events = [event(&[("a/file", Kind::Added)])];
+        let layout = Layout::planned(&events);
+        let mut replay = layout.clone();
+        assert!(Arc::ptr_eq(&layout.plan.occupancy, &replay.plan.occupancy));
+        replay.begin_commit();
+        assert_eq!(layout.plan.next_commit, 0);
+        assert_eq!(replay.plan.next_commit, 1);
+    }
+
+    #[test]
+    fn revival_after_parent_growth_spawns_outside_the_live_reservation() {
+        let mut events = vec![event(&[]); 301];
+        events[0] = event(&[("a/x/file", Kind::Added)]);
+        events[1] = event(&[("a/x/file", Kind::Deleted)]);
+        events[150].changes = (0..200)
+            .map(|index| FileChange {
+                path: format!("a/{index}"),
+                kind: Kind::Added,
+                insertions: 1,
+                removals: 0,
+            })
+            .collect();
+        events[300] = event(&[("a/x/file", Kind::Added)]);
+        let mut layout = Layout::planned(&events);
+        let child = layout.dir_index["a/x"];
+        let parent = layout.dir_index["a"];
+        for event in &events[..300] {
+            layout.begin_commit();
+            for change in &event.changes {
+                match change.kind {
+                    Kind::Added => {
+                        layout.add(&change.path, 0.0, 0);
+                    }
+                    Kind::Deleted => {
+                        layout.remove(&change.path, 0.0, 0);
+                    }
+                    _ => unreachable!("fixture contains only additions and deletions"),
+                }
+            }
+            for _ in 0..30 {
+                layout.step(DT);
+            }
+        }
+        assert!(!layout.dir(child).live);
+        assert!(
+            layout
+                .dir(child)
+                .position
+                .distance(layout.dir(parent).position)
+                < layout.dir(parent).radius()
+        );
+        let parent_position = layout.dir(parent).position;
+        layout.begin_commit();
+        layout.add("a/x/file", 0.0, 0);
+        assert_eq!(layout.dir(parent).position, parent_position);
+        assert!(
+            layout.dir(child).position.distance(parent_position)
+                >= layout.dir(parent).reserve.max(layout.dir(parent).radius())
+                    + layout.dir(child).radius()
+        );
     }
 
     #[test]

@@ -1047,7 +1047,7 @@ mod tests {
 
     #[test]
     fn subtree_slots_include_retired_directories_and_survive_reappearance() {
-        let mut layout = Layout::default();
+        let mut layout = Layout::planned(&[]);
         layout.add("early/deep/a.rs", 0.0, 0);
         layout.settle(120, 1.0 / 60.0);
         layout.remove("early/deep/a.rs", 0.0, 0);
@@ -1064,7 +1064,7 @@ mod tests {
         hues.sync(&layout);
         assert_eq!(hues.slots, [0, 0, 0, 1, 1, 2]);
 
-        let mut rewind = Layout::default();
+        let mut rewind = Layout::planned(&[]);
         rewind.add("early/deep/a.rs", 0.0, 0);
         hues.sync(&rewind);
         rewind.add("later/a.rs", 0.0, 0);
