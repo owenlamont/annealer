@@ -11,6 +11,10 @@ pub(super) struct Geometry {
 
 #[derive(Clone)]
 pub(super) struct Theme {
+    pub(super) glyphs: &'static [FileGlyph],
+    pub(super) glyph_material: StandardMaterial,
+    pub(super) file_glyph_transform: Transform,
+    pub(super) fallback_glyph_transform: Transform,
     pub(super) clear: Color,
     pub(super) paper: StandardMaterial,
     pub(super) edge: StandardMaterial,
@@ -41,6 +45,81 @@ pub(super) struct Theme {
     pub(super) label_height: f32,
 }
 
+pub(super) struct FileGlyph {
+    pub(super) png: &'static [u8],
+    filenames: &'static [&'static str],
+    extensions: &'static [&'static str],
+}
+
+const FILE_GLYPHS: &[FileGlyph] = &[
+    FileGlyph {
+        png: include_bytes!("../assets/seti/png/default.png"),
+        filenames: &[],
+        extensions: &[],
+    },
+    FileGlyph {
+        png: include_bytes!("../assets/seti/png/rust.png"),
+        filenames: &[],
+        extensions: &["rs"],
+    },
+    FileGlyph {
+        png: include_bytes!("../assets/seti/png/python.png"),
+        filenames: &[],
+        extensions: &["py", "pyi", "ipynb"],
+    },
+    FileGlyph {
+        png: include_bytes!("../assets/seti/png/config.png"),
+        filenames: &["Cargo.toml", ".editorconfig", ".gitignore"],
+        extensions: &["toml", "cfg", "ini"],
+    },
+    FileGlyph {
+        png: include_bytes!("../assets/seti/png/yml.png"),
+        filenames: &[],
+        extensions: &["yml", "yaml"],
+    },
+    FileGlyph {
+        png: include_bytes!("../assets/seti/png/markdown.png"),
+        filenames: &["README.md"],
+        extensions: &["md", "markdown"],
+    },
+    FileGlyph {
+        png: include_bytes!("../assets/seti/png/json.png"),
+        filenames: &[],
+        extensions: &["json", "jsonc"],
+    },
+    FileGlyph {
+        png: include_bytes!("../assets/seti/png/javascript.png"),
+        filenames: &[],
+        extensions: &["js", "jsx", "mjs", "cjs"],
+    },
+    FileGlyph {
+        png: include_bytes!("../assets/seti/png/typescript.png"),
+        filenames: &[],
+        extensions: &["ts", "tsx", "mts", "cts"],
+    },
+    FileGlyph {
+        png: include_bytes!("../assets/seti/png/shell.png"),
+        filenames: &[".bashrc", ".zshrc"],
+        extensions: &["sh", "bash", "zsh", "fish", "ps1"],
+    },
+    FileGlyph {
+        png: include_bytes!("../assets/seti/png/lock.png"),
+        filenames: &[
+            "Cargo.lock",
+            "package-lock.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+            "uv.lock",
+        ],
+        extensions: &["lock"],
+    },
+    FileGlyph {
+        png: include_bytes!("../assets/seti/png/docker.png"),
+        filenames: &["Dockerfile", "Containerfile"],
+        extensions: &["dockerfile"],
+    },
+];
+
 impl Theme {
     pub(super) fn neon() -> Self {
         let developers = [
@@ -57,6 +136,19 @@ impl Theme {
             ..default()
         };
         Self {
+            glyphs: FILE_GLYPHS,
+            glyph_material: StandardMaterial {
+                base_color: Color::srgb(0.025, 0.055, 0.085),
+                alpha_mode: AlphaMode::Blend,
+                unlit: true,
+                ..default()
+            },
+            file_glyph_transform: Transform::from_xyz(0.0, 0.105, 0.0)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                .with_scale(Vec3::new(0.32, 0.38, 1.0)),
+            fallback_glyph_transform: Transform::from_xyz(0.035, 0.105, 0.0)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                .with_scale(Vec3::new(0.23, 0.30, 1.0)),
             clear: Color::srgb(0.012, 0.023, 0.04),
             paper: solid(Color::srgb(0.64, 0.76, 0.85)),
             edge: solid(Color::srgb(0.09, 0.2, 0.28)),
@@ -144,6 +236,22 @@ impl Theme {
             .min(self.directory_edge_widths.len() - 1)]
     }
 
+    pub(super) fn glyph_kind(&self, name: &str) -> usize {
+        self.glyphs
+            .iter()
+            .position(|glyph| glyph.filenames.contains(&name))
+            .or_else(|| {
+                let (_, extension) = name.rsplit_once('.')?;
+                self.glyphs.iter().position(|glyph| {
+                    glyph
+                        .extensions
+                        .iter()
+                        .any(|known| known.eq_ignore_ascii_case(extension))
+                })
+            })
+            .unwrap_or(0)
+    }
+
     pub(super) fn spine_kind(extension: &str) -> usize {
         match extension {
             "rs" | "c" | "cpp" | "h" | "go" => 0,
@@ -160,6 +268,69 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filenames_override_extensions_and_unknowns_keep_the_fallback() {
+        let theme = Theme::neon();
+        for (name, equivalent) in [
+            ("Cargo.toml", "settings.toml"),
+            ("Cargo.lock", "deps.lock"),
+            ("README.md", "guide.md"),
+            ("Dockerfile", "image.dockerfile"),
+            ("Containerfile", "Dockerfile"),
+            ("package-lock.json", "Cargo.lock"),
+            ("pnpm-lock.yaml", "Cargo.lock"),
+            (".gitignore", "settings.cfg"),
+            (".bashrc", "build.sh"),
+            ("main.PY", "main.py"),
+            ("README.MD", "guide.md"),
+            ("workflow.YML", "workflow.yaml"),
+            ("app.tsx", "app.ts"),
+        ] {
+            assert_ne!(theme.glyph_kind(name), 0, "{name}");
+            assert_eq!(
+                theme.glyph_kind(name),
+                theme.glyph_kind(equivalent),
+                "{name}"
+            );
+        }
+        for name in ["unknown.xyz", "LICENSE", "no_extension", "", ".unknown"] {
+            assert_eq!(theme.glyph_kind(name), 0, "{name}");
+        }
+    }
+
+    #[test]
+    fn mapping_keys_are_unique_and_required_languages_have_distinct_art() {
+        let theme = Theme::neon();
+        let mut filenames = std::collections::HashSet::new();
+        let mut extensions = std::collections::HashSet::new();
+        for glyph in theme.glyphs {
+            for name in glyph.filenames {
+                assert!(filenames.insert(name), "duplicate filename {name}");
+            }
+            for extension in glyph.extensions {
+                assert!(
+                    extensions.insert(extension),
+                    "duplicate extension {extension}"
+                );
+            }
+        }
+        let kinds = ["main.rs", "main.py", "Cargo.toml", "ci.yaml", "README.md"]
+            .map(|name| theme.glyph_kind(name));
+        assert_eq!(
+            kinds
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            5
+        );
+        let art: std::collections::HashSet<_> = kinds
+            .into_iter()
+            .map(|kind| theme.glyphs[kind].png)
+            .collect();
+        assert_eq!(art.len(), 5);
+        assert!(!kinds.contains(&0));
+    }
 
     #[test]
     fn trunks_are_wider_and_spines_have_pale_backing() {

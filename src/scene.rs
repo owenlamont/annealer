@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use bevy::{
     asset::RenderAssetUsages,
     camera::RenderTarget,
+    image::{CompressedImageFormats, ImageSampler, ImageType},
     prelude::*,
     render::{
         RenderPlugin,
@@ -52,6 +53,8 @@ struct FileVisual {
     frame: Entity,
     spine: Entity,
     kind: usize,
+    glyph: Entity,
+    glyph_kind: usize,
     halo: Entity,
     author: Option<usize>,
 }
@@ -68,6 +71,8 @@ struct Palette {
     descending: Handle<StandardMaterial>,
     rising: Handle<StandardMaterial>,
     spines: Vec<Handle<StandardMaterial>>,
+    glyph_mesh: Handle<Mesh>,
+    glyphs: Vec<Handle<StandardMaterial>>,
     avatars: Vec<Handle<StandardMaterial>>,
     glass: Vec<Handle<StandardMaterial>>,
     directories: Vec<Vec<Handle<StandardMaterial>>>,
@@ -79,7 +84,33 @@ impl Palette {
         let cube = meshes.add(Cuboid::default());
         let sphere = meshes.add(Sphere::new(theme.avatar_radius));
         let beam = meshes.add(Cylinder::new(0.035, 1.0));
+        let glyph_mesh = meshes.add(Rectangle::default());
+        let textures: Vec<_> = theme
+            .glyphs
+            .iter()
+            .map(|glyph| {
+                let image = Image::from_buffer(
+                    glyph.png,
+                    ImageType::Extension("png"),
+                    CompressedImageFormats::NONE,
+                    true,
+                    ImageSampler::linear(),
+                    RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+                )
+                .expect("vendored glyphs are valid PNGs");
+                world.resource_mut::<Assets<Image>>().add(image)
+            })
+            .collect();
         let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
+        let glyphs = textures
+            .into_iter()
+            .map(|texture| {
+                materials.add(StandardMaterial {
+                    base_color_texture: Some(texture),
+                    ..theme.glyph_material.clone()
+                })
+            })
+            .collect();
         let paper = materials.add(theme.paper.clone());
         let edge = materials.add(theme.edge.clone());
         let grid = materials.add(theme.grid.clone());
@@ -121,6 +152,8 @@ impl Palette {
             descending,
             rising,
             spines,
+            glyph_mesh,
+            glyphs,
             avatars,
             glass,
             directories,
@@ -373,7 +406,12 @@ fn sync_files(
     });
     for (id, file) in layout.files() {
         let entity = *pools.files.entry(id).or_insert_with(|| {
-            spawn_file(world, palette, Theme::spine_kind(file.extension()))
+            spawn_file(
+                world,
+                palette,
+                Theme::spine_kind(file.extension()),
+                palette.theme.glyph_kind(file.name()),
+            )
         });
         let position = Vec3::new(file.position.x, 0.0, file.position.y);
         if let Some(mut transform) = world.get_mut::<Transform>(entity) {
@@ -394,6 +432,22 @@ fn sync_files(
                 .get_mut::<FileVisual>(entity)
                 .expect("file entities are visuals")
                 .kind = kind;
+        }
+        let visual = world
+            .get::<FileVisual>(entity)
+            .expect("file entities are visuals");
+        let glyph_kind = palette.theme.glyph_kind(file.name());
+        if visual.glyph_kind != glyph_kind {
+            let (glyph, spine) = (visual.glyph, visual.spine);
+            world.entity_mut(glyph).insert((
+                MeshMaterial3d(palette.glyphs[glyph_kind].clone()),
+                glyph_transform(palette, glyph_kind),
+            ));
+            set_visible(world, spine, glyph_kind == 0);
+            world
+                .get_mut::<FileVisual>(entity)
+                .expect("file entities are visuals")
+                .glyph_kind = glyph_kind;
         }
         let dir = layout.dir(file.dir);
         let material = if dir.parent.is_none() {
@@ -420,7 +474,20 @@ fn sync_files(
     }
 }
 
-fn spawn_file(world: &mut World, palette: &Palette, kind: usize) -> Entity {
+fn glyph_transform(palette: &Palette, kind: usize) -> Transform {
+    if kind == 0 {
+        palette.theme.fallback_glyph_transform
+    } else {
+        palette.theme.file_glyph_transform
+    }
+}
+
+fn spawn_file(
+    world: &mut World,
+    palette: &Palette,
+    kind: usize,
+    glyph_kind: usize,
+) -> Entity {
     let frame = block(
         world,
         &palette.cube,
@@ -442,13 +509,14 @@ fn spawn_file(world: &mut World, palette: &Palette, kind: usize) -> Entity {
         palette.theme.file_spine_position,
         palette.theme.file_spine_scale,
     );
-    let ink = block(
-        world,
-        &palette.cube,
-        &palette.edge,
-        Vec3::new(0.03, 0.09, -0.12),
-        Vec3::new(0.26, 0.015, 0.03),
-    );
+    set_visible(world, spine, glyph_kind == 0);
+    let glyph = world
+        .spawn((
+            Mesh3d(palette.glyph_mesh.clone()),
+            MeshMaterial3d(palette.glyphs[glyph_kind].clone()),
+            glyph_transform(palette, glyph_kind),
+        ))
+        .id();
     let halo = block(
         world,
         &palette.cube,
@@ -465,11 +533,13 @@ fn spawn_file(world: &mut World, palette: &Palette, kind: usize) -> Entity {
                 frame,
                 spine,
                 kind,
+                glyph,
+                glyph_kind,
                 halo,
                 author: None,
             },
         ))
-        .add_children(&[frame, paper, spine, ink, halo])
+        .add_children(&[frame, paper, spine, glyph, halo])
         .id()
 }
 
@@ -873,6 +943,7 @@ mod tests {
     fn structure_reuses_materials_across_depth_growth_pool_reuse_and_rewind() {
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<Image>>();
         world.init_resource::<Assets<StandardMaterial>>();
         let theme = Theme::neon();
         let palette = Palette::new(&mut world, &theme);
@@ -930,6 +1001,82 @@ mod tests {
     }
 
     #[test]
+    fn renamed_files_switch_glyph_and_fallback_without_replacing_the_tile() {
+        use crate::timeline::{Event, FileChange, Kind};
+
+        let paths = ["file.rs", "file.py", "unknown.xyz", "Dockerfile"];
+        let events: Vec<_> = paths
+            .iter()
+            .enumerate()
+            .map(|(index, path)| Event {
+                author: "Ada".to_owned(),
+                seconds: i64::try_from(index).expect("small fixture"),
+                changes: vec![FileChange {
+                    path: (*path).to_owned(),
+                    kind: if index == 0 {
+                        Kind::Added
+                    } else {
+                        Kind::Moved {
+                            from: paths[index - 1].to_owned(),
+                        }
+                    },
+                    insertions: 0,
+                    removals: 0,
+                }],
+            })
+            .collect();
+        let mut simulation = Simulation::new(&events, &model::Options::default());
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<Image>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let palette = Palette::new(&mut world, &Theme::neon());
+        let material_count = world.resource::<Assets<StandardMaterial>>().len();
+        let image_count = world.resource::<Assets<Image>>().len();
+        let mut pools = Pools::default();
+        let mut original = None;
+        for (frame, name) in [
+            (18, paths[0]),
+            (33, paths[1]),
+            (48, paths[2]),
+            (63, paths[3]),
+            (18, paths[0]),
+        ] {
+            simulation.advance_to(frame, 30);
+            sync_files(&mut world, &palette, &mut pools, &simulation);
+            let entity = pools.files[&0];
+            assert_eq!(*original.get_or_insert(entity), entity);
+            let visual = world.get::<FileVisual>(entity).expect("file visual");
+            let kind = palette.theme.glyph_kind(name);
+            assert_eq!(visual.glyph_kind, kind);
+            assert_eq!(
+                world
+                    .get::<MeshMaterial3d<StandardMaterial>>(visual.glyph)
+                    .expect("glyph material")
+                    .0,
+                palette.glyphs[kind]
+            );
+            assert_eq!(
+                world.get::<Transform>(visual.glyph),
+                Some(&glyph_transform(&palette, kind))
+            );
+            assert_eq!(
+                world.get::<Visibility>(visual.spine),
+                Some(&if kind == 0 {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                })
+            );
+            assert_eq!(
+                world.resource::<Assets<StandardMaterial>>().len(),
+                material_count
+            );
+            assert_eq!(world.resource::<Assets<Image>>().len(), image_count);
+        }
+    }
+
+    #[test]
     fn file_frames_follow_subtree_moves_and_keep_language_spines() {
         use crate::timeline::{Event, FileChange, Kind};
 
@@ -961,6 +1108,7 @@ mod tests {
             Simulation::new(&events, &model::Options::default(), &Theme::neon());
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<Image>>();
         world.init_resource::<Assets<StandardMaterial>>();
         let palette = Palette::new(&mut world, &Theme::neon());
         let materials = world.resource::<Assets<StandardMaterial>>().len();
