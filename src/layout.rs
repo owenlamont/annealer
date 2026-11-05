@@ -1,0 +1,570 @@
+use std::collections::{BTreeMap, HashMap};
+
+use bevy::math::Vec2;
+
+const SPACING: f32 = 0.62;
+const GOLDEN_ANGLE: f32 = 2.399_963_2;
+const GAP: f32 = 0.8;
+const SPRING: f32 = 6.0;
+const REPULSION: f32 = 9.0;
+const FAN: f32 = 1.5;
+const DAMPING: f32 = 3.5;
+const MAX_SPEED: f32 = 12.0;
+const FILE_EASE: f32 = 5.0;
+const FADE_SECONDS: f32 = 0.6;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Presence {
+    Arriving,
+    Present,
+    Leaving,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct File {
+    pub path: String,
+    pub dir: usize,
+    slot: usize,
+    pub position: Vec2,
+    pub presence: f32,
+    pub state: Presence,
+    delay: f32,
+    pub heat: f32,
+    pub author: usize,
+}
+
+impl File {
+    pub(super) fn name(&self) -> &str {
+        self.path.rsplit('/').next().unwrap_or(&self.path)
+    }
+
+    pub(super) fn extension(&self) -> &str {
+        self.name()
+            .rsplit_once('.')
+            .map_or("", |(_, extension)| extension)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Dir {
+    pub path: String,
+    pub parent: Option<usize>,
+    pub depth: u16,
+    pub position: Vec2,
+    velocity: Vec2,
+    slots: Vec<Option<u64>>,
+    pub files: usize,
+    children: usize,
+    pub live: bool,
+}
+
+impl Dir {
+    fn core(&self) -> f32 {
+        SPACING * slot_count(self.slots.len()).sqrt()
+    }
+
+    pub(super) fn radius(&self) -> f32 {
+        self.core() + 0.4
+    }
+
+    pub(super) fn name(&self) -> &str {
+        self.path.rsplit('/').next().unwrap_or(&self.path)
+    }
+}
+
+/// Persistent file and directory positions on the ground plane, relaxed incrementally.
+#[derive(Clone, Debug)]
+pub(super) struct Layout {
+    dirs: Vec<Dir>,
+    dir_index: HashMap<String, usize>,
+    files: BTreeMap<u64, File>,
+    file_index: HashMap<String, u64>,
+    next_id: u64,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        let root = Dir {
+            path: String::new(),
+            parent: None,
+            depth: 0,
+            position: Vec2::ZERO,
+            velocity: Vec2::ZERO,
+            slots: Vec::new(),
+            files: 0,
+            children: 0,
+            live: true,
+        };
+        Self {
+            dirs: vec![root],
+            dir_index: HashMap::from([(String::new(), 0)]),
+            files: BTreeMap::new(),
+            file_index: HashMap::new(),
+            next_id: 0,
+        }
+    }
+}
+
+impl Layout {
+    pub(super) fn files(&self) -> impl Iterator<Item = (u64, &File)> {
+        self.files.iter().map(|(&id, file)| (id, file))
+    }
+
+    pub(super) fn file(&self, id: u64) -> Option<&File> {
+        self.files.get(&id)
+    }
+
+    pub(super) fn dirs(&self) -> impl Iterator<Item = (usize, &Dir)> {
+        self.dirs.iter().enumerate().filter(|(_, dir)| dir.live)
+    }
+
+    pub(super) fn dir_count(&self) -> usize {
+        self.dirs.len()
+    }
+
+    pub(super) fn dir(&self, index: usize) -> &Dir {
+        &self.dirs[index]
+    }
+
+    pub(super) fn present_files(&self) -> usize {
+        self.files
+            .values()
+            .filter(|file| file.state != Presence::Leaving)
+            .count()
+    }
+
+    /// Where a file is heading, which differs from its position while it glides.
+    pub(super) fn target(&self, id: u64) -> Option<Vec2> {
+        let file = self.files.get(&id)?;
+        Some(self.dirs[file.dir].position + spiral(file.slot))
+    }
+
+    pub(super) fn add(&mut self, path: &str, delay: f32, author: usize) -> u64 {
+        if let Some(&id) = self.file_index.get(path) {
+            let file = self.files.get_mut(&id).expect("indexed files exist");
+            file.state = Presence::Arriving;
+            file.delay = delay;
+            file.heat = 1.0;
+            file.author = author;
+            return id;
+        }
+        let dir = self.ensure_dir(parent_path(path));
+        let slot = self.claim_slot(dir);
+        let id = self.next_id;
+        self.next_id += 1;
+        self.dirs[dir].slots[slot] = Some(id);
+        self.dirs[dir].files += 1;
+        self.files.insert(
+            id,
+            File {
+                path: path.to_owned(),
+                dir,
+                slot,
+                position: self.dirs[dir].position + spiral(slot),
+                presence: 0.0,
+                state: Presence::Arriving,
+                delay,
+                heat: 1.0,
+                author,
+            },
+        );
+        self.file_index.insert(path.to_owned(), id);
+        id
+    }
+
+    pub(super) fn touch(&mut self, path: &str, author: usize) -> u64 {
+        match self.file_index.get(path) {
+            Some(&id) => {
+                let file = self.files.get_mut(&id).expect("indexed files exist");
+                file.heat = 1.0;
+                file.author = author;
+                id
+            }
+            None => self.add(path, 0.0, author),
+        }
+    }
+
+    pub(super) fn remove(
+        &mut self,
+        path: &str,
+        delay: f32,
+        author: usize,
+    ) -> Option<u64> {
+        let &id = self.file_index.get(path)?;
+        let file = self.files.get_mut(&id).expect("indexed files exist");
+        file.state = Presence::Leaving;
+        file.delay = delay;
+        file.heat = 1.0;
+        file.author = author;
+        Some(id)
+    }
+
+    /// Keeps the file's identity and current position while it glides to its new slot.
+    pub(super) fn rename(&mut self, from: &str, to: &str, author: usize) -> u64 {
+        let Some(id) = self.file_index.remove(from) else {
+            return self.add(to, 0.0, author);
+        };
+        if let Some(previous) = self.file_index.remove(to) {
+            self.release(previous);
+            self.files.remove(&previous);
+        }
+        let dir = self.ensure_dir(parent_path(to));
+        let slot = self.claim_slot(dir);
+        self.dirs[dir].slots[slot] = Some(id);
+        self.dirs[dir].files += 1;
+        self.release(id);
+        let file = self.files.get_mut(&id).expect("indexed files exist");
+        to.clone_into(&mut file.path);
+        file.dir = dir;
+        file.slot = slot;
+        file.heat = 1.0;
+        file.author = author;
+        if file.state == Presence::Leaving {
+            file.state = Presence::Arriving;
+        }
+        self.file_index.insert(to.to_owned(), id);
+        id
+    }
+
+    pub(super) fn step(&mut self, dt: f32) {
+        self.fade_files(dt);
+        self.prune_empty();
+        self.relax(dt);
+        let ease = 1.0 - (-FILE_EASE * dt).exp();
+        for file in self.files.values_mut() {
+            let target = self.dirs[file.dir].position + spiral(file.slot);
+            file.position += (target - file.position) * ease;
+        }
+    }
+
+    /// Completes pending fades and relaxes for `steps` ticks, for history before playback.
+    pub(super) fn settle(&mut self, steps: u32, dt: f32) {
+        for file in self.files.values_mut() {
+            file.delay = 0.0;
+            file.heat = 0.0;
+            file.presence = match file.state {
+                Presence::Leaving => 0.0,
+                Presence::Arriving | Presence::Present => 1.0,
+            };
+        }
+        for _ in 0..steps {
+            self.step(dt);
+        }
+        for file in self.files.values_mut() {
+            file.position = self.dirs[file.dir].position + spiral(file.slot);
+        }
+    }
+
+    /// Bounds of live directories on the ground plane, as minimum and maximum corners.
+    pub(super) fn bounds(&self) -> (Vec2, Vec2) {
+        self.dirs().fold(
+            (Vec2::splat(-2.0), Vec2::splat(2.0)),
+            |(low, high), (_, dir)| {
+                let radius = Vec2::splat(dir.radius());
+                (
+                    low.min(dir.position - radius),
+                    high.max(dir.position + radius),
+                )
+            },
+        )
+    }
+
+    fn fade_files(&mut self, dt: f32) {
+        let mut gone = Vec::new();
+        for (&id, file) in &mut self.files {
+            file.heat *= (-dt / 1.6).exp();
+            if file.delay > 0.0 {
+                file.delay -= dt;
+                continue;
+            }
+            match file.state {
+                Presence::Arriving => {
+                    file.presence = (file.presence + dt / FADE_SECONDS).min(1.0);
+                    if file.presence >= 1.0 {
+                        file.state = Presence::Present;
+                    }
+                }
+                Presence::Leaving => {
+                    file.presence = (file.presence - dt / FADE_SECONDS).max(0.0);
+                    if file.presence <= 0.0 {
+                        gone.push(id);
+                    }
+                }
+                Presence::Present => {}
+            }
+        }
+        for id in gone {
+            let file = self.files.remove(&id).expect("faded files exist");
+            if self.file_index.get(&file.path) == Some(&id) {
+                self.file_index.remove(&file.path);
+            }
+            self.free_slot(file.dir, file.slot);
+        }
+    }
+
+    fn release(&mut self, id: u64) {
+        let file = &self.files[&id];
+        let (dir, slot) = (file.dir, file.slot);
+        self.free_slot(dir, slot);
+    }
+
+    fn free_slot(&mut self, dir: usize, slot: usize) {
+        let entry = &mut self.dirs[dir];
+        entry.slots[slot] = None;
+        entry.files -= 1;
+        while entry.slots.last() == Some(&None) {
+            entry.slots.pop();
+        }
+    }
+
+    /// Retires empty directories once per step, never mid-mutation, so a directory
+    /// emptied and refilled within one commit keeps its place.
+    fn prune_empty(&mut self) {
+        for index in 1..self.dirs.len() {
+            let dir = &self.dirs[index];
+            if dir.live && dir.files == 0 && dir.children == 0 {
+                self.prune(index);
+            }
+        }
+    }
+
+    fn prune(&mut self, mut dir: usize) {
+        while dir != 0 && self.dirs[dir].files == 0 && self.dirs[dir].children == 0 {
+            self.dirs[dir].live = false;
+            let parent = self.dirs[dir]
+                .parent
+                .expect("non-root directories have parents");
+            self.dirs[parent].children -= 1;
+            dir = parent;
+        }
+    }
+
+    fn claim_slot(&mut self, dir: usize) -> usize {
+        let slots = &mut self.dirs[dir].slots;
+        if let Some(free) = slots.iter().position(Option::is_none) {
+            free
+        } else {
+            slots.push(None);
+            slots.len() - 1
+        }
+    }
+
+    fn ensure_dir(&mut self, path: &str) -> usize {
+        if let Some(&index) = self.dir_index.get(path) {
+            if !self.dirs[index].live {
+                let parent = self.ensure_dir(parent_path(path));
+                self.dirs[parent].children += 1;
+                let position = self.spawn_position(parent, path);
+                let dir = &mut self.dirs[index];
+                dir.live = true;
+                dir.position = position;
+                dir.velocity = Vec2::ZERO;
+            }
+            return index;
+        }
+        let parent = self.ensure_dir(parent_path(path));
+        self.dirs[parent].children += 1;
+        let index = self.dirs.len();
+        self.dirs.push(Dir {
+            path: path.to_owned(),
+            parent: Some(parent),
+            depth: self.dirs[parent].depth + 1,
+            position: self.spawn_position(parent, path),
+            velocity: Vec2::ZERO,
+            slots: Vec::new(),
+            files: 0,
+            children: 0,
+            live: true,
+        });
+        self.dir_index.insert(path.to_owned(), index);
+        index
+    }
+
+    fn spawn_position(&self, parent: usize, path: &str) -> Vec2 {
+        let parent_dir = &self.dirs[parent];
+        let angle = hash_angle(path);
+        let mut direction = Vec2::from_angle(angle);
+        if let Some(grandparent) = parent_dir.parent {
+            let away = (parent_dir.position - self.dirs[grandparent].position)
+                .normalize_or_zero();
+            direction = (direction * 0.8 + away).normalize_or(direction);
+        }
+        parent_dir.position + direction * (parent_dir.core() + GAP + 0.6)
+    }
+
+    fn relax(&mut self, dt: f32) {
+        let live: Vec<usize> = self.dirs().map(|(index, _)| index).collect();
+        let mut forces = vec![Vec2::ZERO; self.dirs.len()];
+        for &child in &live {
+            let dir = &self.dirs[child];
+            let Some(parent) = dir.parent else { continue };
+            let parent_dir = &self.dirs[parent];
+            let offset = dir.position - parent_dir.position;
+            let distance = offset.length().max(1e-4);
+            let unit = offset / distance;
+            let rest = parent_dir.core() + dir.radius() + GAP;
+            forces[child] -= unit * (distance - rest) * SPRING;
+            if let Some(grandparent) = parent_dir.parent {
+                let away = (parent_dir.position - self.dirs[grandparent].position)
+                    .normalize_or_zero();
+                forces[child] += away * FAN;
+            }
+        }
+        for (position, &first) in live.iter().enumerate() {
+            for &second in &live[position + 1..] {
+                let (a, b) = (&self.dirs[first], &self.dirs[second]);
+                if a.parent == Some(second) || b.parent == Some(first) {
+                    continue;
+                }
+                let reach = a.radius() + b.radius() + GAP;
+                let offset = b.position - a.position;
+                if offset.x.abs() > reach || offset.y.abs() > reach {
+                    continue;
+                }
+                let distance = offset.length();
+                if distance >= reach {
+                    continue;
+                }
+                let unit = if distance > 1e-4 {
+                    offset / distance
+                } else {
+                    Vec2::from_angle(hash_angle(&b.path))
+                };
+                let push = unit * (reach - distance) * REPULSION;
+                forces[first] -= push;
+                forces[second] += push;
+            }
+        }
+        let damping = (-DAMPING * dt).exp();
+        for &index in &live[1..] {
+            let dir = &mut self.dirs[index];
+            dir.velocity = ((dir.velocity + forces[index] * dt) * damping)
+                .clamp_length_max(MAX_SPEED);
+            dir.position += dir.velocity * dt;
+        }
+    }
+}
+
+fn parent_path(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(parent, _)| parent)
+}
+
+fn slot_count(count: usize) -> f32 {
+    f32::from(u16::try_from(count).unwrap_or(u16::MAX))
+}
+
+fn spiral(slot: usize) -> Vec2 {
+    let index = slot_count(slot);
+    Vec2::from_angle(index * GOLDEN_ANGLE) * SPACING * (index + 0.5).sqrt()
+}
+
+fn hash_angle(text: &str) -> f32 {
+    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    f32::from(u16::try_from(hash >> 48).expect("shifted hash fits in u16"))
+        / f32::from(u16::MAX)
+        * std::f32::consts::TAU
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DT: f32 = 1.0 / 60.0;
+
+    #[test]
+    fn rename_keeps_identity_and_glides_between_directories() {
+        let mut layout = Layout::default();
+        let id = layout.add("src/layout.rs", 0.0, 0);
+        layout.add("src/scene/mod.rs", 0.0, 0);
+        layout.settle(300, DT);
+        let before = layout.file(id).expect("added file exists").position;
+        assert_eq!(layout.rename("src/layout.rs", "src/scene/layout.rs", 0), id);
+        let mut previous = before;
+        for _ in 0..240 {
+            layout.step(DT);
+            let position = layout.file(id).expect("renamed file exists").position;
+            assert!(position.distance(previous) < 0.5, "file jumped");
+            previous = position;
+        }
+        let file = layout.file(id).expect("renamed file exists");
+        assert_eq!(file.path, "src/scene/layout.rs");
+        assert!(file.position.distance(before) > 0.5, "file did not move");
+    }
+
+    #[test]
+    fn renaming_a_sole_file_keeps_its_directory_in_place() {
+        let mut layout = Layout::default();
+        let id = layout.add("docs/a.md", 0.0, 0);
+        for file in 0..40 {
+            layout.add(&format!("other/{file}.rs"), 0.0, 0);
+        }
+        layout.settle(600, DT);
+        let dir = layout.file(id).expect("added file exists").dir;
+        let before = layout.dir(dir).position;
+        layout.rename("docs/a.md", "docs/b.md", 0);
+        layout.step(DT);
+        assert_eq!(layout.file(id).expect("renamed file exists").dir, dir);
+        assert!(
+            layout.dir(dir).position.distance(before) < 0.05,
+            "directory jumped"
+        );
+    }
+
+    #[test]
+    fn renaming_onto_a_fading_file_keeps_its_directory_in_place() {
+        let mut layout = Layout::default();
+        layout.add("docs/a.md", 0.0, 0);
+        let id = layout.add("src/b.md", 0.0, 0);
+        for file in 0..40 {
+            layout.add(&format!("other/{file}.rs"), 0.0, 0);
+        }
+        layout.settle(600, DT);
+        layout.remove("docs/a.md", 0.6, 0);
+        layout.step(DT);
+        let docs = layout.dir_index["docs"];
+        let before = layout.dir(docs).position;
+        layout.rename("src/b.md", "docs/a.md", 0);
+        layout.step(DT);
+        assert_eq!(layout.file(id).expect("renamed file exists").dir, docs);
+        assert!(
+            layout.dir(docs).position.distance(before) < 0.05,
+            "directory jumped"
+        );
+    }
+
+    #[test]
+    fn deletion_fades_then_prunes_empty_directories() {
+        let mut layout = Layout::default();
+        let id = layout.add("docs/guide.md", 0.0, 0);
+        layout.settle(10, DT);
+        layout.remove("docs/guide.md", 0.5, 0);
+        layout.step(DT);
+        assert_eq!(layout.file(id).map(|file| file.presence), Some(1.0));
+        for _ in 0..120 {
+            layout.step(DT);
+        }
+        assert!(layout.file(id).is_none());
+        assert_eq!(layout.dirs().count(), 1);
+    }
+
+    #[test]
+    fn sibling_directories_separate() {
+        let mut layout = Layout::default();
+        for name in ["a", "b", "c", "d"] {
+            for file in 0..12 {
+                layout.add(&format!("{name}/{file}.rs"), 0.0, 0);
+            }
+        }
+        layout.settle(900, DT);
+        let dirs: Vec<_> = layout.dirs().skip(1).map(|(_, dir)| dir).collect();
+        for (index, a) in dirs.iter().enumerate() {
+            for b in &dirs[index + 1..] {
+                let clearance =
+                    a.position.distance(b.position) - a.radius() - b.radius();
+                assert!(clearance > 0.0, "{} overlaps {}", a.path, b.path);
+            }
+        }
+    }
+}

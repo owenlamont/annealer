@@ -1,4 +1,4 @@
-use std::f32::consts::FRAC_PI_2;
+use std::collections::HashMap;
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -15,52 +15,64 @@ use bevy::{
     winit::WinitPlugin,
 };
 
-use crate::model::{self, FILES};
+use crate::model::{self, Simulation};
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
+const LABELS: usize = 72;
+const GRID_LINES: i16 = 20;
+
+const NEON: [Color; 6] = [
+    Color::srgb(0.25, 0.92, 0.95),
+    Color::srgb(1.0, 0.6, 0.25),
+    Color::srgb(0.95, 0.35, 0.85),
+    Color::srgb(0.55, 1.0, 0.45),
+    Color::srgb(1.0, 0.9, 0.35),
+    Color::srgb(0.55, 0.6, 1.0),
+];
 
 #[derive(Resource)]
 pub(super) struct Frame {
-    pub index: u16,
+    pub index: u32,
     pub fps: u16,
 }
+
+#[derive(Resource)]
+pub(super) struct Playback(pub Simulation);
 
 #[derive(Resource)]
 struct SceneTarget(RenderTarget);
 
 #[derive(Component)]
-struct FileLabel(usize);
+struct SceneCamera;
 
 #[derive(Component)]
-enum Animated {
-    Avatar {
-        second: bool,
-    },
-    Beam {
-        file: usize,
-        second: bool,
-    },
-    File(usize),
-    Fragment {
-        file: usize,
-        rising: bool,
-        offset: f32,
-    },
+struct Label;
+
+#[derive(Component)]
+struct Caption;
+
+#[derive(Component)]
+struct FileVisual {
+    spine: Entity,
+    kind: usize,
+    halo: Entity,
+    author: Option<usize>,
 }
 
+#[derive(Resource)]
 struct Palette {
     cube: Handle<Mesh>,
     sphere: Handle<Mesh>,
     beam: Handle<Mesh>,
     paper: Handle<StandardMaterial>,
-    ink: Handle<StandardMaterial>,
-    brass: Handle<StandardMaterial>,
-    cyan: Handle<StandardMaterial>,
-    glass: Handle<StandardMaterial>,
-    amber_glass: Handle<StandardMaterial>,
-    ground: Handle<StandardMaterial>,
+    edge: Handle<StandardMaterial>,
     grid: Handle<StandardMaterial>,
+    descending: Handle<StandardMaterial>,
+    rising: Handle<StandardMaterial>,
+    spines: Vec<Handle<StandardMaterial>>,
+    avatars: Vec<Handle<StandardMaterial>>,
+    glass: Vec<Handle<StandardMaterial>>,
 }
 
 impl Palette {
@@ -68,48 +80,86 @@ impl Palette {
         let mut meshes = world.resource_mut::<Assets<Mesh>>();
         let cube = meshes.add(Cuboid::default());
         let sphere = meshes.add(Sphere::new(0.22));
-        let beam = meshes.add(Cylinder::new(0.04, 1.0));
+        let beam = meshes.add(Cylinder::new(0.035, 1.0));
         let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
-        let mut material = |color| {
+        let mut solid = |color| {
             materials.add(StandardMaterial {
                 base_color: color,
                 unlit: true,
                 ..default()
             })
         };
+        let paper = solid(Color::srgb(0.64, 0.76, 0.85));
+        let edge = solid(Color::srgb(0.09, 0.2, 0.28));
+        let grid = solid(Color::srgb(0.045, 0.09, 0.13));
+        let descending = solid(NEON[0]);
+        let rising = solid(NEON[1]);
+        let spines = [
+            Color::srgb(1.0, 0.55, 0.25),
+            Color::srgb(0.35, 0.65, 1.0),
+            Color::srgb(0.85, 0.9, 0.95),
+            Color::srgb(0.45, 0.95, 0.55),
+            Color::srgb(1.0, 0.85, 0.3),
+            Color::srgb(0.9, 0.4, 0.9),
+            Color::srgb(0.45, 0.5, 0.58),
+        ]
+        .map(&mut solid)
+        .to_vec();
+        let avatars = NEON.map(&mut solid).to_vec();
+        let glass = NEON
+            .map(|color| {
+                materials.add(StandardMaterial {
+                    base_color: color.with_alpha(0.32),
+                    alpha_mode: AlphaMode::Blend,
+                    unlit: true,
+                    ..default()
+                })
+            })
+            .to_vec();
         Self {
             cube,
             sphere,
             beam,
-            paper: material(Color::srgb(0.64, 0.76, 0.85)),
-            ink: material(Color::srgb(0.1, 0.22, 0.3)),
-            brass: material(Color::srgb(1.0, 0.65, 0.3)),
-            cyan: material(Color::srgb(0.25, 0.92, 0.95)),
-            ground: material(Color::srgb(0.025, 0.045, 0.075)),
-            grid: material(Color::srgb(0.055, 0.11, 0.16)),
-            glass: materials.add(StandardMaterial {
-                base_color: Color::srgba(0.2, 0.85, 0.95, 0.26),
-                alpha_mode: AlphaMode::Blend,
-                unlit: true,
-                ..default()
-            }),
-            amber_glass: materials.add(StandardMaterial {
-                base_color: Color::srgba(1.0, 0.55, 0.2, 0.3),
-                alpha_mode: AlphaMode::Blend,
-                unlit: true,
-                ..default()
-            }),
+            paper,
+            edge,
+            grid,
+            descending,
+            rising,
+            spines,
+            avatars,
+            glass,
+        }
+    }
+
+    fn spine_kind(extension: &str) -> usize {
+        match extension {
+            "rs" | "c" | "cpp" | "h" | "go" => 0,
+            "py" | "pyi" | "ipynb" => 1,
+            "md" | "rst" | "txt" | "html" => 2,
+            "toml" | "yaml" | "yml" | "json" | "lock" | "cfg" | "ini" => 3,
+            "js" | "ts" | "tsx" | "jsx" | "mjs" => 4,
+            "sh" | "ps1" | "nix" | "snap" => 5,
+            _ => 6,
         }
     }
 }
 
-fn app() -> App {
+#[derive(Resource, Default)]
+struct Pools {
+    files: HashMap<u64, Entity>,
+    beams: Vec<Entity>,
+    fragments: Vec<Entity>,
+    edges: Vec<Entity>,
+    avatars: Vec<Entity>,
+    grid: Vec<Entity>,
+}
+
+fn app(simulation: Simulation, title: String) -> App {
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.012, 0.023, 0.04)))
-        .insert_resource(Frame {
-            index: 0,
-            fps: model::PREVIEW_FPS,
-        })
+        .insert_resource(Playback(simulation))
+        .insert_resource(Title(title))
+        .init_resource::<Pools>()
         .add_systems(Startup, setup)
         .add_systems(Update, animate)
         .add_systems(
@@ -122,23 +172,34 @@ fn app() -> App {
     app
 }
 
-pub(super) fn preview() {
-    let mut app = app();
+#[derive(Resource)]
+struct Title(String);
+
+pub(super) fn preview(simulation: Simulation, title: String) {
+    let mut app = app(simulation, title);
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
-            title: "Annealer — material study".to_owned(),
+            title: "Annealer — layout study".to_owned(),
             resolution: (WIDTH, HEIGHT).into(),
             ..default()
         }),
         ..default()
     }))
     .insert_resource(SceneTarget(RenderTarget::default()))
+    .insert_resource(Frame {
+        index: 0,
+        fps: model::PREVIEW_FPS,
+    })
     .add_systems(Update, preview_clock.before(animate));
     app.run();
 }
 
-pub(super) fn headless(fps: u16) -> (App, Handle<Image>) {
-    let mut app = app();
+pub(super) fn headless(
+    simulation: Simulation,
+    title: String,
+    fps: u16,
+) -> (App, Handle<Image>) {
+    let mut app = app(simulation, title);
     app.add_plugins(
         DefaultPlugins
             .set(WindowPlugin {
@@ -170,166 +231,58 @@ fn setup(world: &mut World) {
             target,
             Tonemapping::None,
             DebandDither::Disabled,
-            Transform::from_xyz(6.0, 9.5, 12.0)
-                .looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y),
+            Transform::from_xyz(6.0, 9.5, 12.0).looking_at(Vec3::ZERO, Vec3::Y),
+            SceneCamera,
         ))
         .id();
     let palette = Palette::new(world);
-    block(
-        world,
-        &palette,
-        &palette.ground,
-        Vec3::new(0.0, -0.16, 0.0),
-        Vec3::new(15.0, 0.12, 11.0),
-    );
-    for line in -6_i16..=6 {
-        block(
-            world,
-            &palette,
-            &palette.grid,
-            Vec3::new(f32::from(line), -0.09, 0.0),
-            Vec3::new(0.012, 0.012, 10.0),
-        );
-    }
-    for line in -4_i16..=4 {
-        block(
-            world,
-            &palette,
-            &palette.grid,
-            Vec3::new(0.0, -0.09, f32::from(line)),
-            Vec3::new(14.0, 0.012, 0.012),
-        );
-    }
-    spawn_files(world, &palette, camera);
-    spawn_activity(world, &palette);
-    heading(world, camera, "ANNEALER", 28.0, 28.0, 30.0);
-    heading(
-        world,
-        camera,
-        "A small history, taking shape",
-        28.0,
-        68.0,
-        16.0,
-    );
-    heading(world, camera, "01   /   MATERIAL STUDY", 28.0, 668.0, 14.0);
-}
-
-fn block(
-    world: &mut World,
-    palette: &Palette,
-    material: &Handle<StandardMaterial>,
-    position: Vec3,
-    size: Vec3,
-) -> Entity {
-    world
-        .spawn((
-            Mesh3d(palette.cube.clone()),
-            MeshMaterial3d(material.clone()),
-            Transform::from_translation(position).with_scale(size),
-        ))
-        .id()
-}
-
-fn spawn_files(world: &mut World, palette: &Palette, camera: Entity) {
-    for (index, file) in FILES.iter().enumerate() {
-        let parent = world
-            .spawn((
-                Transform::from_translation(file.position.into()),
-                Animated::File(index),
-            ))
-            .id();
-        let paper = block(
-            world,
-            palette,
-            &palette.paper,
-            Vec3::new(0.0, 0.08, 0.0),
-            Vec3::new(0.92, 0.08, 1.15),
-        );
-        let spine = block(
-            world,
-            palette,
-            &palette.brass,
-            Vec3::new(-0.4, 0.13, 0.0),
-            Vec3::new(0.07, 0.025, 1.0),
-        );
-        world.entity_mut(parent).add_children(&[paper, spine]);
-        for line in 0_i16..4 {
-            let width = if line == 3 { 0.29 } else { 0.58 };
-            let ink = block(
-                world,
-                palette,
-                &palette.ink,
-                Vec3::new(0.0, 0.13, f32::from(line) * 0.2 - 0.32),
-                Vec3::new(width, 0.02, 0.035),
-            );
-            world.entity_mut(parent).add_child(ink);
-        }
+    let floor =
+        world
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial {
+                base_color: Color::srgb(0.02, 0.036, 0.06),
+                unlit: true,
+                ..default()
+            });
+    world.spawn((
+        Mesh3d(palette.cube.clone()),
+        MeshMaterial3d(floor),
+        Transform::from_xyz(0.0, -0.2, 0.0).with_scale(Vec3::new(4000.0, 0.1, 4000.0)),
+    ));
+    let grid: Vec<_> = (0..(4 * GRID_LINES + 2))
+        .map(|_| {
+            world
+                .spawn((
+                    Mesh3d(palette.cube.clone()),
+                    MeshMaterial3d(palette.grid.clone()),
+                    Transform::default(),
+                ))
+                .id()
+        })
+        .collect();
+    world.resource_mut::<Pools>().grid = grid;
+    world.insert_resource(palette);
+    for _ in 0..LABELS {
         world.spawn((
-            Text::new(file.name),
-            TextFont::from_font_size(15.0),
+            Text::new(""),
+            TextFont::from_font_size(14.0),
             TextColor(Color::srgb(0.72, 0.83, 0.9)),
             Node {
                 position_type: PositionType::Absolute,
+                padding: UiRect::axes(px(3.0), px(1.0)),
                 ..default()
             },
+            BackgroundColor(Color::srgba(0.008, 0.016, 0.03, 0.72)),
+            Visibility::Hidden,
             UiTargetCamera(camera),
-            FileLabel(index),
+            Label,
         ));
     }
-}
-
-fn spawn_activity(world: &mut World, palette: &Palette) {
-    world.spawn((
-        Mesh3d(palette.sphere.clone()),
-        MeshMaterial3d(palette.cyan.clone()),
-        Transform::default(),
-        Animated::Avatar { second: false },
-    ));
-    for index in 0..8 {
-        world.spawn((
-            Mesh3d(palette.beam.clone()),
-            MeshMaterial3d(palette.glass.clone()),
-            Transform::default(),
-            Animated::Beam {
-                file: index,
-                second: false,
-            },
-        ));
-    }
-    world.spawn((
-        Mesh3d(palette.sphere.clone()),
-        MeshMaterial3d(palette.brass.clone()),
-        Transform::default(),
-        Animated::Avatar { second: true },
-    ));
-    for file in [0, 2, 5, 7] {
-        world.spawn((
-            Mesh3d(palette.beam.clone()),
-            MeshMaterial3d(palette.amber_glass.clone()),
-            Transform::default(),
-            Animated::Beam { file, second: true },
-        ));
-    }
-    for (file, rising) in [(0, false), (3, false), (5, true)] {
-        for fragment in 0_u16..3 {
-            let entity = block(
-                world,
-                palette,
-                if rising {
-                    &palette.brass
-                } else {
-                    &palette.cyan
-                },
-                Vec3::ZERO,
-                Vec3::new(0.12, 0.035, 0.2),
-            );
-            world.entity_mut(entity).insert(Animated::Fragment {
-                file,
-                rising,
-                offset: f32::from(fragment) / 3.0,
-            });
-        }
-    }
+    let title = world.resource::<Title>().0.clone();
+    heading(world, camera, "ANNEALER", 28.0, 28.0, 30.0);
+    heading(world, camera, &title, 28.0, 68.0, 16.0);
+    let caption = heading(world, camera, " ", 28.0, 668.0, 14.0);
+    world.entity_mut(caption).insert(Caption);
 }
 
 fn heading(
@@ -339,24 +292,29 @@ fn heading(
     left: f32,
     top: f32,
     size: f32,
-) {
-    world.spawn((
-        Text::new(text),
-        TextFont::from_font_size(size),
-        TextColor(Color::srgb(0.65, 0.8, 0.87)),
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(left),
-            top: px(top),
-            ..default()
-        },
-        UiTargetCamera(camera),
-    ));
+) -> Entity {
+    world
+        .spawn((
+            Text::new(text),
+            TextFont::from_font_size(size),
+            TextColor(Color::srgb(0.65, 0.8, 0.87)),
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(left),
+                top: px(top),
+                ..default()
+            },
+            UiTargetCamera(camera),
+        ))
+        .id()
 }
 
 fn preview_clock(world: &mut World) {
     let elapsed = world.resource::<Time<Real>>().elapsed();
-    world.resource_mut::<Frame>().index = model::preview_frame(elapsed);
+    let duration = world.resource::<Playback>().0.duration();
+    let fps = world.resource::<Frame>().fps;
+    let frames = model::frames_for(duration, fps);
+    world.resource_mut::<Frame>().index = model::preview_frame(elapsed, fps) % frames;
     if world
         .resource::<ButtonInput<KeyCode>>()
         .just_pressed(KeyCode::Escape)
@@ -367,82 +325,423 @@ fn preview_clock(world: &mut World) {
 
 fn animate(world: &mut World) {
     let frame = world.resource::<Frame>();
-    let sample = model::sample(frame.index, frame.fps);
-    let mut query = world.query::<(&Animated, &mut Transform)>();
-    for (animated, mut transform) in query.iter_mut(world) {
-        match *animated {
-            Animated::Avatar { second } => {
-                transform.translation = avatar(&sample, second);
-            }
-            Animated::Beam { file, second } => {
-                let avatar = avatar(&sample, second);
-                let target = Vec3::from(FILES[file].position) + Vec3::Y * 0.16;
-                let delta = target - avatar;
-                *transform = Transform::from_translation((avatar + target) * 0.5)
-                    .with_rotation(Quat::from_rotation_arc(Vec3::Y, delta.normalize()))
-                    .with_scale(Vec3::new(1.0, delta.length(), 1.0));
-            }
-            Animated::File(file) => {
-                let scale = file_scale(file, &sample);
-                transform.scale = Vec3::splat(scale.max(0.001));
-            }
-            Animated::Fragment {
-                file,
-                rising,
-                offset,
-            } => {
-                let progress = (sample.seconds * 0.65 + offset).fract();
-                let height = if rising { progress } else { 1.0 - progress };
-                transform.translation = Vec3::from(FILES[file].position)
-                    + Vec3::new(0.2, 0.25 + height * 2.4, -0.1);
-                transform.rotation = Quat::from_rotation_y(progress * FRAC_PI_2);
-            }
+    let (index, fps) = (frame.index, frame.fps);
+    world.resource_scope(|world, mut playback: Mut<Playback>| {
+        playback.0.advance_to(index, fps);
+        world.resource_scope(|world, palette: Mut<Palette>| {
+            world.resource_scope(|world, mut pools: Mut<Pools>| {
+                let simulation = &playback.0;
+                sync_files(world, &palette, &mut pools, simulation);
+                sync_structure(world, &palette, &mut pools, simulation);
+                sync_activity(world, &palette, &mut pools, simulation);
+                place_camera(world, simulation);
+            });
+        });
+    });
+}
+
+fn sync_files(
+    world: &mut World,
+    palette: &Palette,
+    pools: &mut Pools,
+    simulation: &Simulation,
+) {
+    let layout = simulation.layout();
+    pools.files.retain(|id, entity| {
+        let keep = layout.file(*id).is_some();
+        if !keep {
+            world.despawn(*entity);
+        }
+        keep
+    });
+    for (id, file) in layout.files() {
+        let entity = *pools.files.entry(id).or_insert_with(|| {
+            spawn_file(world, palette, Palette::spine_kind(file.extension()))
+        });
+        let position = Vec3::new(file.position.x, 0.0, file.position.y);
+        if let Some(mut transform) = world.get_mut::<Transform>(entity) {
+            transform.translation = position;
+            transform.scale = Vec3::splat(file.presence.max(0.001));
+        }
+        let visual = world
+            .get::<FileVisual>(entity)
+            .expect("file entities are visuals");
+        let (halo, current) = (visual.halo, visual.author);
+        let kind = Palette::spine_kind(file.extension());
+        if visual.kind != kind {
+            let spine = visual.spine;
+            world
+                .entity_mut(spine)
+                .insert(MeshMaterial3d(palette.spines[kind].clone()));
+            world
+                .get_mut::<FileVisual>(entity)
+                .expect("file entities are visuals")
+                .kind = kind;
+        }
+        let glowing = file.heat > 0.03;
+        if glowing && current != Some(file.author) {
+            world.entity_mut(halo).insert(MeshMaterial3d(
+                palette.glass[file.author % NEON.len()].clone(),
+            ));
+            world
+                .get_mut::<FileVisual>(entity)
+                .expect("file entities are visuals")
+                .author = Some(file.author);
+        }
+        if let Some(mut transform) = world.get_mut::<Transform>(halo) {
+            let grow = 1.0 + 0.45 * file.heat;
+            transform.scale = Vec3::new(0.5 * grow, 0.02, 0.62 * grow);
+        }
+        set_visible(world, halo, glowing);
+    }
+}
+
+fn spawn_file(world: &mut World, palette: &Palette, kind: usize) -> Entity {
+    let paper = block(
+        world,
+        &palette.cube,
+        &palette.paper,
+        Vec3::new(0.0, 0.05, 0.0),
+        Vec3::new(0.46, 0.06, 0.58),
+    );
+    let spine = block(
+        world,
+        &palette.cube,
+        &palette.spines[kind],
+        Vec3::new(-0.19, 0.09, 0.0),
+        Vec3::new(0.05, 0.02, 0.5),
+    );
+    let ink = block(
+        world,
+        &palette.cube,
+        &palette.edge,
+        Vec3::new(0.03, 0.09, -0.12),
+        Vec3::new(0.26, 0.015, 0.03),
+    );
+    let halo = block(
+        world,
+        &palette.cube,
+        &palette.glass[0],
+        Vec3::new(0.0, 0.01, 0.0),
+        Vec3::ONE,
+    );
+    world.entity_mut(halo).insert(Visibility::Hidden);
+    world
+        .spawn((
+            Transform::default(),
+            Visibility::default(),
+            FileVisual {
+                spine,
+                kind,
+                halo,
+                author: None,
+            },
+        ))
+        .add_children(&[paper, spine, ink, halo])
+        .id()
+}
+
+fn sync_structure(
+    world: &mut World,
+    palette: &Palette,
+    pools: &mut Pools,
+    simulation: &Simulation,
+) {
+    let layout = simulation.layout();
+    let edges: Vec<_> = layout
+        .dirs()
+        .filter_map(|(_, dir)| {
+            let parent = layout.dir(dir.parent?);
+            Some((
+                ground(parent.position) - Vec3::Y * 0.05,
+                ground(dir.position) - Vec3::Y * 0.05,
+            ))
+        })
+        .collect();
+    let pool = grow(
+        world,
+        &mut pools.edges,
+        edges.len(),
+        &palette.beam,
+        &palette.edge,
+    );
+    for (entity, &(from, to)) in pool.iter().zip(&edges) {
+        place_beam(world, *entity, from, to, 0.6);
+    }
+    hide_rest(world, pool, edges.len());
+    let (focus, distance) = simulation.view();
+    let extent = distance * 0.5;
+    let spacing = 2.0_f32.powf((extent / 4.0).log2().ceil().max(0.0));
+    let centre = (focus / spacing).round() * spacing;
+    let half = spacing * f32::from(GRID_LINES);
+    let thickness = 0.012 * spacing.sqrt();
+    for (index, &entity) in pools.grid.iter().enumerate() {
+        let line = f32::from(
+            i16::try_from(index).expect("grid pool is small") % (2 * GRID_LINES + 1)
+                - GRID_LINES,
+        );
+        let along_x = index
+            >= usize::try_from(2 * GRID_LINES + 1).expect("grid size is positive");
+        let (translation, scale) = if along_x {
+            (
+                Vec3::new(centre.x, -0.13, centre.z + line * spacing),
+                Vec3::new(2.0 * half, 0.01, thickness),
+            )
+        } else {
+            (
+                Vec3::new(centre.x + line * spacing, -0.13, centre.z),
+                Vec3::new(thickness, 0.01, 2.0 * half),
+            )
+        };
+        if let Some(mut transform) = world.get_mut::<Transform>(entity) {
+            *transform = Transform::from_translation(translation).with_scale(scale);
         }
     }
 }
 
-fn file_scale(file: usize, sample: &model::Sample) -> f32 {
-    match file {
-        8 => sample.created,
-        9 => sample.deleted,
-        _ => 1.0,
+fn sync_activity(
+    world: &mut World,
+    palette: &Palette,
+    pools: &mut Pools,
+    simulation: &Simulation,
+) {
+    let avatars = simulation.avatars();
+    while pools.avatars.len() < avatars.len() {
+        let index = pools.avatars.len();
+        let entity = world
+            .spawn((
+                Mesh3d(palette.sphere.clone()),
+                MeshMaterial3d(palette.avatars[index % NEON.len()].clone()),
+                Transform::default(),
+                Visibility::Hidden,
+            ))
+            .id();
+        pools.avatars.push(entity);
+    }
+    for (index, &entity) in pools.avatars.iter().enumerate() {
+        let avatar = avatars.get(index);
+        let presence = avatar.map_or(0.0, |avatar| avatar.presence);
+        if let (Some(avatar), Some(mut transform)) =
+            (avatar, world.get_mut::<Transform>(entity))
+        {
+            transform.translation = avatar.position;
+            transform.scale = Vec3::splat((presence * simulation.scale()).max(0.001));
+        }
+        set_visible(world, entity, presence > 0.0);
+    }
+    let beams = simulation.beams();
+    let mut pool = std::mem::take(&mut pools.beams);
+    while pool.len() < beams.len() {
+        pool.push(
+            world
+                .spawn((
+                    Mesh3d(palette.beam.clone()),
+                    MeshMaterial3d(palette.glass[0].clone()),
+                    Transform::default(),
+                    Visibility::Hidden,
+                ))
+                .id(),
+        );
+    }
+    for (entity, beam) in pool.iter().zip(&beams) {
+        world.entity_mut(*entity).insert(MeshMaterial3d(
+            palette.glass[beam.author % NEON.len()].clone(),
+        ));
+        place_beam(
+            world,
+            *entity,
+            beam.from,
+            beam.to,
+            beam.width * simulation.scale().sqrt(),
+        );
+    }
+    hide_rest(world, &pool, beams.len());
+    pools.beams = pool;
+    let fragments = simulation.fragments();
+    let mut pool = std::mem::take(&mut pools.fragments);
+    while pool.len() < fragments.len() {
+        let entity = block(
+            world,
+            &palette.cube,
+            &palette.descending,
+            Vec3::ZERO,
+            Vec3::ONE,
+        );
+        pool.push(entity);
+    }
+    for (entity, fragment) in pool.iter().zip(&fragments) {
+        let material = if fragment.rising {
+            &palette.rising
+        } else {
+            &palette.descending
+        };
+        world
+            .entity_mut(*entity)
+            .insert(MeshMaterial3d(material.clone()));
+        if let Some(mut transform) = world.get_mut::<Transform>(*entity) {
+            *transform = Transform::from_translation(fragment.position).with_scale(
+                Vec3::new(0.12, 0.035, 0.2)
+                    * (fragment.scale * simulation.scale().sqrt()).max(0.001),
+            );
+        }
+        set_visible(world, *entity, fragment.scale > 0.0);
+    }
+    hide_rest(world, &pool, fragments.len());
+    pools.fragments = pool;
+}
+
+fn place_camera(world: &mut World, simulation: &Simulation) {
+    let (focus, distance) = simulation.view();
+    let mut query = world.query_filtered::<&mut Transform, With<SceneCamera>>();
+    if let Ok(mut transform) = query.single_mut(world) {
+        *transform =
+            Transform::from_translation(focus + model::view_direction() * distance)
+                .looking_at(focus, Vec3::Y);
     }
 }
 
-fn avatar(sample: &model::Sample, second: bool) -> Vec3 {
-    if second {
-        sample.other_avatar.into()
-    } else {
-        sample.avatar.into()
+fn grow<'a>(
+    world: &mut World,
+    pool: &'a mut Vec<Entity>,
+    needed: usize,
+    mesh: &Handle<Mesh>,
+    material: &Handle<StandardMaterial>,
+) -> &'a [Entity] {
+    while pool.len() < needed {
+        pool.push(
+            world
+                .spawn((
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(material.clone()),
+                    Transform::default(),
+                    Visibility::Hidden,
+                ))
+                .id(),
+        );
     }
+    pool
+}
+
+fn hide_rest(world: &mut World, pool: &[Entity], used: usize) {
+    for &entity in &pool[used.min(pool.len())..] {
+        set_visible(world, entity, false);
+    }
+}
+
+fn set_visible(world: &mut World, entity: Entity, visible: bool) {
+    let wanted = if visible {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    if let Some(mut visibility) = world.get_mut::<Visibility>(entity)
+        && *visibility != wanted
+    {
+        *visibility = wanted;
+    }
+}
+
+fn place_beam(world: &mut World, entity: Entity, from: Vec3, to: Vec3, width: f32) {
+    let delta = to - from;
+    if let Some(mut transform) = world.get_mut::<Transform>(entity) {
+        *transform = Transform::from_translation((from + to) * 0.5)
+            .with_rotation(Quat::from_rotation_arc(
+                Vec3::Y,
+                delta.normalize_or(Vec3::Y),
+            ))
+            .with_scale(Vec3::new(
+                width.max(0.001),
+                delta.length().max(0.001),
+                width.max(0.001),
+            ));
+    }
+    set_visible(world, entity, width > 0.0);
+}
+
+fn block(
+    world: &mut World,
+    mesh: &Handle<Mesh>,
+    material: &Handle<StandardMaterial>,
+    position: Vec3,
+    size: Vec3,
+) -> Entity {
+    world
+        .spawn((
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(material.clone()),
+            Transform::from_translation(position).with_scale(size),
+            Visibility::default(),
+        ))
+        .id()
+}
+
+fn ground(point: Vec2) -> Vec3 {
+    Vec3::new(point.x, 0.0, point.y)
 }
 
 fn labels(world: &mut World) {
-    let frame = world.resource::<Frame>();
-    let sample = model::sample(frame.index, frame.fps);
-    let mut camera_query = world.query::<(&Camera, &GlobalTransform)>();
+    let mut camera_query =
+        world.query_filtered::<(&Camera, &GlobalTransform), With<SceneCamera>>();
     let Ok((camera, transform)) = camera_query.single(world) else {
         return;
     };
-    let positions: Vec<_> = FILES
-        .iter()
-        .map(|file| {
-            camera.world_to_viewport(
-                transform,
-                Vec3::from(file.position) + Vec3::new(-0.35, 0.0, 0.9),
-            )
-        })
-        .collect();
-    let mut query = world.query::<(&FileLabel, &mut Node, &mut Visibility)>();
-    for (label, mut node, mut visibility) in query.iter_mut(world) {
-        if let Ok(position) = positions[label.0] {
-            node.left = px(position.x);
-            node.top = px(position.y);
-        }
-        *visibility = if file_scale(label.0, &sample) < 0.01 {
-            Visibility::Hidden
-        } else {
-            Visibility::Visible
+    let (camera, transform) = (camera.clone(), *transform);
+    let playback = world.resource::<Playback>();
+    let caption = playback.0.caption();
+    let mut wanted = playback.0.labels();
+    wanted.sort_by_key(|label| label.kind);
+    let mut placed: Vec<Rect> = Vec::new();
+    let mut chosen = Vec::new();
+    for label in wanted {
+        let Ok(point) = camera.world_to_viewport(&transform, label.position) else {
+            continue;
         };
+        let width = 8.0
+            + 8.6
+                * f32::from(
+                    u16::try_from(label.text.chars().count()).unwrap_or(u16::MAX),
+                );
+        let rect = Rect::from_corners(point, point + Vec2::new(width, 20.0));
+        if rect.min.x < 0.0
+            || rect.min.y < 0.0
+            || rect.max.x > 1280.0
+            || rect.max.y > 720.0
+            || placed.iter().any(|other| !other.intersect(rect).is_empty())
+        {
+            continue;
+        }
+        placed.push(rect);
+        chosen.push((point, label.text, label.kind != model::LabelKind::Landmark));
+        if chosen.len() == LABELS {
+            break;
+        }
+    }
+    let mut query = world.query_filtered::<(&mut Text, &mut Node, &mut Visibility, &mut TextColor), With<Label>>();
+    let mut chosen = chosen.into_iter();
+    for (mut text, mut node, mut visibility, mut color) in query.iter_mut(world) {
+        if let Some((point, label, emphasis)) = chosen.next() {
+            if text.0 != label {
+                text.0 = label;
+            }
+            node.left = px(point.x);
+            node.top = px(point.y);
+            let wanted = if emphasis {
+                Color::srgb(0.88, 0.95, 1.0)
+            } else {
+                Color::srgb(0.62, 0.86, 0.95)
+            };
+            if color.0 != wanted {
+                color.0 = wanted;
+            }
+            *visibility = Visibility::Inherited;
+        } else {
+            *visibility = Visibility::Hidden;
+        }
+    }
+    let mut query = world.query_filtered::<&mut Text, With<Caption>>();
+    if let Ok(mut text) = query.single_mut(world)
+        && text.0 != caption
+    {
+        text.0 = caption;
     }
 }

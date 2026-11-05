@@ -18,7 +18,12 @@ fn help_is_available_without_initialising_the_renderer() {
 
 #[test]
 fn invalid_timing_is_rejected_before_creating_output() {
-    for (flag, value) in [("--fps", "0"), ("--frames", "1"), ("--fps", "241")] {
+    for (flag, value) in [
+        ("--fps", "0"),
+        ("--frames", "1"),
+        ("--fps", "241"),
+        ("--commit-seconds", "0"),
+    ] {
         let output = Command::new(env!("CARGO_BIN_EXE_annealer"))
             .args(["export", ".", flag, value])
             .output()
@@ -39,4 +44,20 @@ fn export_refuses_an_existing_directory() {
         String::from_utf8_lossy(&output.stderr).contains("create new export directory")
     );
     assert_eq!(output.stdout, [] as [u8; 0]);
+}
+
+#[test]
+fn failed_import_leaves_no_export_directory() {
+    let scratch = tempfile::tempdir().expect("temporary directory is available");
+    let output_dir = scratch.path().join("frames");
+    let output = Command::new(env!("CARGO_BIN_EXE_annealer"))
+        .arg("export")
+        .arg(&output_dir)
+        .arg("--repository")
+        .arg(scratch.path())
+        .output()
+        .expect("CLI can start");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("open local repository"));
+    assert!(!output_dir.exists());
 }

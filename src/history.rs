@@ -26,29 +26,29 @@ pub(super) enum Error {
 
 #[derive(Serialize)]
 pub(super) struct History {
-    tip: String,
+    pub(super) tip: String,
     merge_policy: &'static str,
     rename_policy: &'static str,
     diff_policy: &'static str,
-    commits: Vec<Commit>,
+    pub(super) commits: Vec<Commit>,
 }
 
 #[derive(Serialize)]
-struct Commit {
-    id: String,
-    parents: Vec<String>,
-    author: Identity,
+pub(super) struct Commit {
+    pub(super) id: String,
+    pub(super) parents: Vec<String>,
+    pub(super) author: Identity,
     committer: Identity,
     message: Vec<u8>,
-    changes: Vec<Change>,
+    pub(super) changes: Vec<Change>,
 }
 
 #[derive(Serialize)]
-struct Identity {
+pub(super) struct Identity {
     raw_signature: Vec<u8>,
-    name: Vec<u8>,
+    pub(super) name: Vec<u8>,
     email: Vec<u8>,
-    seconds: i64,
+    pub(super) seconds: i64,
     offset_seconds: i32,
 }
 
@@ -59,18 +59,18 @@ struct Entry {
 }
 
 #[derive(Serialize)]
-struct Change {
-    path: Vec<u8>,
-    source_path: Option<Vec<u8>>,
-    kind: ChangeKind,
+pub(super) struct Change {
+    pub(super) path: Vec<u8>,
+    pub(super) source_path: Option<Vec<u8>>,
+    pub(super) kind: ChangeKind,
     before: Option<Entry>,
     after: Option<Entry>,
-    diff: BlobDiff,
+    pub(super) diff: BlobDiff,
 }
 
 #[derive(Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-enum ChangeKind {
+pub(super) enum ChangeKind {
     Addition,
     Deletion,
     Modification,
@@ -79,7 +79,7 @@ enum ChangeKind {
 
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum BlobDiff {
+pub(super) enum BlobDiff {
     Text {
         insertions: u32,
         removals: u32,
@@ -90,7 +90,7 @@ enum BlobDiff {
 }
 
 #[derive(Serialize)]
-struct Hunk {
+pub(super) struct Hunk {
     before_start: u32,
     before_end: u32,
     after_start: u32,
