@@ -16,12 +16,19 @@ icon-pack settings. Filename keys are lowercased. Special filenames precede
 extensions; compound extensions match longest first. Unvendored kinds use the
 generic file icon when no selected association matches.
 
-Regenerate the PNG mip atlases and Rust table with:
+Regenerate associations from a trusted upstream checkout at the pinned commit, then
+the PNG mip atlases and Rust table (Node 24+ and uv):
 
 ```sh
+node scripts/import_icon_mapping.cjs /path/to/vscode-material-icon-theme
 uv run --script scripts/rasterise_icons.py
 cargo fmt --all
 ```
+
+The importer takes the selected icon names from `mapping.json`, executes upstream's
+pattern expansion and default-pack configuration, and rejects missing or cloned
+icons. Associations belonging to an unselected icon are omitted. To change the
+subset, edit the selected names and vendor their SVGs before regenerating.
 
 CairoSVG needs the Cairo system library. The executable embeds the PNGs; Cairo and
 an SVG renderer are unnecessary to build or run Annealer.
