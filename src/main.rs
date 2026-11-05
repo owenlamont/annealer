@@ -13,6 +13,7 @@
 )]
 
 mod cache;
+mod camera;
 mod export;
 mod history;
 mod layout;
