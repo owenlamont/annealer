@@ -139,6 +139,7 @@ impl Simulation {
             geometry: theme.geometry(),
         };
         for event in &events[..start] {
+            state.layout.begin_commit();
             let author = state.author(&event.author, 0.0);
             for change in &event.changes {
                 apply(&mut state.layout, change, author);
@@ -384,6 +385,7 @@ impl State {
     }
 
     fn begin(&mut self, event: &Event, start: f32) {
+        self.layout.begin_commit();
         let author = self.author(&event.author, start);
         let mut touched = BTreeMap::new();
         for change in &event.changes {
@@ -883,7 +885,7 @@ mod tests {
     }
 
     #[test]
-    fn projection_check_rejects_fixed_height() {
+    fn projection_check_rejects_avatars_inside_the_file_plane() {
         let mut sim = simulation();
         sim.advance_to(13, 2);
         assert_clearance(&sim);
@@ -893,9 +895,7 @@ mod tests {
         let points: Vec<_> = state
             .avatars
             .iter()
-            .map(|avatar| {
-                Vec3::new(avatar.position.x, MIN_AVATAR_HEIGHT, avatar.position.z)
-            })
+            .map(|avatar| Vec3::new(avatar.position.x, 0.0, avatar.position.z))
             .collect();
         let lowest = screen_bounds(eye, state.focus, &points).0.y;
         assert!(lowest < highest + 2.0 * AVATAR_CLEARANCE);
@@ -985,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_slices_use_the_whole_history_plan() {
+    fn playback_slices_register_future_directories() {
         let events = timeline::synthetic();
         let mut whole = Simulation::new(&events, &Options::default(), &Theme::neon());
         whole.advance_to(frames_for(whole.duration(), 30), 30);
@@ -1002,7 +1002,7 @@ mod tests {
             (0..sim.layout().dir_count())
                 .map(|index| {
                     let dir = sim.layout().dir(index);
-                    (dir.path.clone(), dir.position)
+                    dir.path.clone()
                 })
                 .collect::<Vec<_>>()
         };

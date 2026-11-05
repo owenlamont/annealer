@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use bevy::math::Vec2;
+use planner::Plan;
 
 mod planner;
 
@@ -52,6 +53,8 @@ pub(super) struct Dir {
     pub files: usize,
     children: usize,
     pub live: bool,
+    activated: bool,
+    reserve: f32,
 }
 
 impl Dir {
@@ -76,7 +79,7 @@ pub(super) struct Layout {
     files: BTreeMap<u64, File>,
     file_index: HashMap<String, u64>,
     next_id: u64,
-    planned: bool,
+    plan: Option<Plan>,
 }
 
 impl Default for Layout {
@@ -91,6 +94,8 @@ impl Default for Layout {
             files: 0,
             children: 0,
             live: true,
+            activated: true,
+            reserve: 0.4,
         };
         Self {
             dirs: vec![root],
@@ -98,7 +103,7 @@ impl Default for Layout {
             files: BTreeMap::new(),
             file_index: HashMap::new(),
             next_id: 0,
-            planned: false,
+            plan: None,
         }
     }
 }
@@ -226,10 +231,9 @@ impl Layout {
 
     pub(super) fn step(&mut self, dt: f32) {
         self.fade_files(dt);
+        self.compact_slots();
         self.prune_empty();
-        if !self.planned {
-            self.relax(dt);
-        }
+        self.relax(dt);
         let ease = 1.0 - (-FILE_EASE * dt).exp();
         for file in self.files.values_mut() {
             let target = self.dirs[file.dir].position + spiral(file.slot);
@@ -308,6 +312,26 @@ impl Layout {
         self.free_slot(dir, slot);
     }
 
+    fn compact_slots(&mut self) {
+        if self.plan.is_none() {
+            return;
+        }
+        for dir in &mut self.dirs {
+            if dir.slots.len() <= dir.files.saturating_mul(2) {
+                continue;
+            }
+            let mut packed = Vec::with_capacity(dir.files);
+            for &id in dir.slots.iter().flatten() {
+                self.files
+                    .get_mut(&id)
+                    .expect("occupied slots have files")
+                    .slot = packed.len();
+                packed.push(Some(id));
+            }
+            dir.slots = packed;
+        }
+    }
+
     fn free_slot(&mut self, dir: usize, slot: usize) {
         let entry = &mut self.dirs[dir];
         entry.slots[slot] = None;
@@ -329,7 +353,11 @@ impl Layout {
     }
 
     fn prune(&mut self, mut dir: usize) {
-        while dir != 0 && self.dirs[dir].files == 0 && self.dirs[dir].children == 0 {
+        while dir != 0
+            && self.dirs[dir].files == 0
+            && self.dirs[dir].children == 0
+            && (self.plan.is_none() || self.dirs[dir].reserve < planner::RELEASE_RADIUS)
+        {
             self.dirs[dir].live = false;
             let parent = self.dirs[dir]
                 .parent
@@ -354,13 +382,14 @@ impl Layout {
             if !self.dirs[index].live {
                 let parent = self.ensure_dir(parent_path(path));
                 self.dirs[parent].children += 1;
-                let position = if self.planned {
+                let position = if self.plan.is_some() && self.dirs[index].activated {
                     self.dirs[index].position
                 } else {
                     self.spawn_position(parent, path)
                 };
                 let dir = &mut self.dirs[index];
                 dir.live = true;
+                dir.activated = true;
                 dir.position = position;
                 dir.velocity = Vec2::ZERO;
             }
@@ -379,6 +408,8 @@ impl Layout {
             files: 0,
             children: 0,
             live: true,
+            activated: true,
+            reserve: 0.4,
         });
         self.dir_index.insert(path.to_owned(), index);
         index
@@ -397,6 +428,10 @@ impl Layout {
     }
 
     fn relax(&mut self, dt: f32) {
+        if self.plan.is_some() {
+            self.relax_planned(dt);
+            return;
+        }
         let live: Vec<usize> = self.dirs().map(|(index, _)| index).collect();
         let mut forces = vec![Vec2::ZERO; self.dirs.len()];
         for &child in &live {
