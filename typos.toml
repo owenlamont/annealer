@@ -1,6 +1,5 @@
 [files]
-extend-exclude = ["Cargo.lock", "assets/material/mapping.json", "src/theme/material.rs"]
+extend-exclude = ["Cargo.lock", "assets/material/mapping.json"]
 
 [default.extend-identifiers]
 PNGs = "PNGs"
-RGBa = "RGBa"

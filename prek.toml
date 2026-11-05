@@ -21,6 +21,14 @@ hooks = [
 repo = "local"
 hooks = [
   {
+    id = "icon-import",
+    name = "Icon importer tests",
+    entry = "uv run --script tests/test_import_icons.py",
+    language = "system",
+    files = '^(scripts/import_icon_mapping\.py|tests/test_import_icons\.py)$',
+    pass_filenames = false,
+  },
+  {
     id = "ci-policy",
     name = "CI Rust input policy",
     entry = "uv run --script tests/test_ci_rust.py",

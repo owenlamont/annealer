@@ -3,12 +3,12 @@ use std::collections::HashMap;
 use bevy::{
     asset::RenderAssetUsages,
     camera::RenderTarget,
-    image::{CompressedImageFormats, ImageSampler, ImageType},
+    image::ImageSampler,
     prelude::*,
     render::{
         RenderPlugin,
         pipelined_rendering::PipelinedRenderingPlugin,
-        render_resource::TextureFormat,
+        render_resource::{Extent3d, TextureDimension, TextureFormat},
         view::{DebandDither, Tonemapping},
     },
     ui::UiSystems,
@@ -94,7 +94,7 @@ impl Palette {
             .glyphs
             .iter()
             .map(|glyph| {
-                let image = glyph_image(glyph.png);
+                let image = glyph_image(glyph.svg, theme.glyph_texture);
                 world.resource_mut::<Assets<Image>>().add(image)
             })
             .collect();
@@ -450,37 +450,95 @@ fn sync_files(
     }
 }
 
-fn glyph_image(png: &[u8]) -> Image {
-    let mut image = Image::from_buffer(
-        png,
-        ImageType::Extension("png"),
-        CompressedImageFormats::NONE,
-        true,
-        ImageSampler::linear(),
-        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
-    )
-    .expect("vendored mip atlases are valid PNGs");
-    let width = image.width();
+fn glyph_image(svg: &str, settings: crate::theme::GlyphTexture) -> Image {
     assert!(
-        width.is_power_of_two() && image.height() == width * 2,
-        "glyph mip atlas dimensions"
+        settings.size.is_power_of_two(),
+        "glyph size is a positive power of two"
     );
-    let pixels = image.data.take().expect("glyph atlas has pixel data");
-    let mut packed = Vec::new();
-    let mut y = 0;
-    let mut size = width;
-    while size > 0 {
-        for row in y..y + size {
-            let start = usize::try_from(row * width * 4).expect("small glyph atlas");
-            let length = usize::try_from(size * 4).expect("small glyph mip");
-            packed.extend_from_slice(&pixels[start..start + length]);
+    assert!(
+        (0.0..0.5).contains(&settings.padding),
+        "glyph padding leaves space for artwork"
+    );
+    let tree = resvg::usvg::Tree::from_str(svg, &resvg::usvg::Options::default())
+        .expect("vendored SVG glyphs are valid");
+    let probe_size = settings.size.max(32);
+    let probe_scale =
+        f32::from(probe_size) / tree.size().width().max(tree.size().height());
+    let mut probe =
+        resvg::tiny_skia::Pixmap::new(u32::from(probe_size), u32::from(probe_size))
+            .expect("glyph probe dimensions fit memory");
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(probe_scale, probe_scale),
+        &mut probe.as_mut(),
+    );
+    let mut low = (probe_size, probe_size);
+    let mut high = (0, 0);
+    for (index, pixel) in probe.pixels().iter().enumerate() {
+        if pixel.alpha() == 0 {
+            continue;
         }
-        y += size;
-        size /= 2;
+        let x =
+            u16::try_from(index % usize::from(probe_size)).expect("probe column fits");
+        let y = u16::try_from(index / usize::from(probe_size)).expect("probe row fits");
+        low = (low.0.min(x), low.1.min(y));
+        high = (high.0.max(x + 1), high.1.max(y + 1));
     }
-    image.texture_descriptor.size.height = width;
-    image.texture_descriptor.mip_level_count = width.ilog2() + 1;
-    image.data = Some(packed);
+    assert!(
+        high.0 > low.0 && high.1 > low.1,
+        "glyph has visible artwork"
+    );
+    let bounds = Rect::from_corners(
+        Vec2::new(f32::from(low.0), f32::from(low.1)) / probe_scale,
+        Vec2::new(f32::from(high.0), f32::from(high.1)) / probe_scale,
+    );
+    let levels = if settings.mipmaps {
+        settings.size.ilog2() + 1
+    } else {
+        1
+    };
+    let mut pixels = Vec::new();
+    for level in 0..levels {
+        let size = settings.size >> level;
+        let extent = f32::from(size);
+        let scale = extent * (1.0 - 2.0 * settings.padding)
+            / bounds.width().max(bounds.height());
+        let transform = resvg::tiny_skia::Transform::from_row(
+            scale,
+            0.0,
+            0.0,
+            scale,
+            (extent - bounds.width() * scale) * 0.5 - bounds.min.x * scale,
+            (extent - bounds.height() * scale) * 0.5 - bounds.min.y * scale,
+        );
+        let mut pixmap =
+            resvg::tiny_skia::Pixmap::new(u32::from(size), u32::from(size))
+                .expect("glyph texture dimensions fit memory");
+        resvg::render(&tree, transform, &mut pixmap.as_mut());
+        for pixel in pixmap.pixels() {
+            let color = pixel.demultiply();
+            pixels.extend_from_slice(&[
+                color.red(),
+                color.green(),
+                color.blue(),
+                color.alpha(),
+            ]);
+        }
+    }
+    let size = u32::from(settings.size);
+    let mut image = Image::new_uninit(
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_descriptor.mip_level_count = levels;
+    image.sampler = ImageSampler::linear();
+    image.data = Some(pixels);
     image
 }
 
@@ -905,9 +963,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn glyph_atlases_decode_into_complete_colour_mip_chains() {
+    fn svg_glyphs_render_into_complete_colour_mip_chains() {
         for glyph in Theme::neon().glyphs {
-            let image = glyph_image(glyph.png);
+            let image = glyph_image(glyph.svg, Theme::neon().glyph_texture);
             assert_eq!((image.width(), image.height()), (256, 256));
             assert_eq!(image.texture_descriptor.mip_level_count, 9);
             assert_eq!(image.data.as_ref().expect("glyph pixels").len(), 349_524);
@@ -917,7 +975,10 @@ mod tests {
             );
         }
         let theme = Theme::neon();
-        let rust = glyph_image(theme.glyphs[theme.glyph_kind("main.rs")].png);
+        let rust = glyph_image(
+            theme.glyphs[theme.glyph_kind("main.rs")].svg,
+            theme.glyph_texture,
+        );
         assert!(
             rust.data
                 .expect("Rust pixels")
@@ -928,6 +989,25 @@ mod tests {
                     && pixel[1] > pixel[2]
                     && pixel[3] == 255)
         );
+    }
+
+    #[test]
+    fn svg_texture_settings_control_resolution_mips_and_straight_alpha() {
+        let mut settings = Theme::neon().glyph_texture;
+        settings.size = 8;
+        settings.mipmaps = false;
+        settings.padding = 0.0;
+        let image = glyph_image(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 16 16">
+            <path d="M0 0h24v24H0z"/>
+            <path d="M1 1h14v14H1z" fill="#ff0000" opacity="0.5"/></svg>"##,
+            settings,
+        );
+        assert_eq!((image.width(), image.height()), (8, 8));
+        assert_eq!(image.texture_descriptor.mip_level_count, 1);
+        let pixels = image.data.expect("SVG pixels");
+        assert_eq!(pixels.len(), 8 * 8 * 4);
+        assert_eq!(&pixels[..4], &[255, 0, 0, 128]);
     }
 
     #[test]

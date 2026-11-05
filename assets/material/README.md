@@ -1,48 +1,45 @@
 # Material Icon Theme file icons
 
-Subset of [Material Icon Theme][upstream], under the included [MIT licence](LICENSE),
-from commit [`f368264282ef14ee7feb012fd54e825181eff9c3`][commit]. The repository
-licence covers the icons; no separate icon licence is present at the pinned commit.
+Subset of [Material Icon Theme][upstream], from the pinned [Open VSX 5.40.0 VSIX][vsix].
+The included [MIT licence](LICENSE.txt) comes from `extension/LICENSE.txt`.
 
-The SVGs retain upstream artwork with trailing newlines normalised. The generic
-`file.svg` reproduces upstream `generateFileIcons` in
-`src/core/generator/fileGenerator.ts`, using the default `#90a4ae` from
-`src/core/generator/config/defaultConfig.ts`; upstream generates rather than tracks
-the generic SVG.
+VSIX SHA-256:
 
-`mapping.json` contains the selected icons' effective associations from upstream
-`src/core/icons/fileIcons.ts`, with upstream `parseByPattern` applied and default
-icon-pack settings. Filename keys are lowercased. Special filenames precede
-extensions; compound extensions match longest first. Unvendored kinds use the
-generic file icon when no selected association matches.
-
-Regenerate associations from a trusted upstream checkout at the pinned commit, then
-the PNG mip atlases and Rust table (Node 24+ and uv):
-
-```sh
-node scripts/import_icon_mapping.cjs /path/to/vscode-material-icon-theme
-uv run --script scripts/rasterise_icons.py
-cargo fmt --all
+```text
+55b565f200881abfd807baf9be52fce45fd52fef013ba71b0f8394984ce1ae06
 ```
 
-The importer takes the selected icon names from `mapping.json`, executes upstream's
-pattern expansion and default-pack configuration, and rejects missing or cloned
-icons. Associations belonging to an unselected icon are omitted. To change the
-subset, edit the selected names and vendor their SVGs before regenerating.
+Re-vendor with the stdlib-only Python script:
 
-CairoSVG needs the Cairo system library. The executable embeds the PNGs; Cairo and
-an SVG renderer are unnecessary to build or run Annealer.
+```sh
+uv run --script scripts/import_icon_mapping.py
+```
 
-Each atlas is a transparent 256×512 PNG. A 256-pixel square base image and every
-half-size mip down to 1×1 sit vertically, aligned left, with one unused bottom row.
-Rasterisation preserves upstream colours and aspect ratio, trims outer whitespace
-and adds an eight-pixel margin. Resizing uses premultiplied alpha. The renderer
-packs the levels into one texture with linear mip filtering, preserving close-view
-detail while reducing minification shimmer.
+The script verifies the archive hash before parsing or writing assets. It reads the
+expanded `extension/dist/material-icons.json`, copies the selected SVGs and licence,
+normalises SVG final newlines, and writes trimmed `mapping.json` associations.
+`--vsix FILE` accepts a cached copy with the same pinned hash; `--output DIRECTORY`
+writes a separate copy for reproducibility checks.
 
-Neon uses untinted, unlit icons without backing tiles. Thin directory-coloured rings
-show membership; larger temporary author-coloured rings show recent touches.
-`Theme` owns art, tint, placement, ring geometry and optional tile presentation.
+Filename associations precede extensions; compound extensions match longest first,
+without ASCII case sensitivity. Unmapped files use the manifest's generic file icon.
+To change the subset, update the importer selection and embedded SVG registry in
+`src/theme/icons.rs` together.
+
+The executable embeds SVG sources and mapping JSON. The mapping is parsed once;
+`resvg` 0.49 rasterises each icon during scene startup, with optional features
+including text, system fonts and raster-image decoding disabled. No filesystem asset
+lookup, Node, Cairo or pre-generated raster files are needed.
+
+`Theme::glyph_texture` controls resolution, padding and mipmaps. Neon renders at
+256 pixels with a 1/32 margin, fitting a raster probe's visible alpha bounds without
+changing aspect ratio. Each mip level is rendered directly from the parsed SVG. Premultiplied
+raster output is converted to straight-alpha sRGB for Bevy's blending and linear
+mip filtering.
+
+Neon keeps untinted icons flat on the floor, without backing tiles. Thin directory
+rings show membership; larger temporary author rings show recent touches. `Theme`
+owns the artwork, material, texture settings, transforms and optional tile style.
 
 [upstream]: https://github.com/material-extensions/vscode-material-icon-theme
-[commit]: https://github.com/material-extensions/vscode-material-icon-theme/tree/f368264282ef14ee7feb012fd54e825181eff9c3
+[vsix]: https://open-vsx.org/api/PKief/material-icon-theme/5.40.0/file/PKief.material-icon-theme-5.40.0.vsix

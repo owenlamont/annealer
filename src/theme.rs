@@ -8,12 +8,13 @@ pub(super) struct Geometry {
     pub avatar_label_offset: Vec3,
     pub label_height: f32,
 }
-mod material;
+mod icons;
 
 #[derive(Clone)]
 pub(super) struct Theme {
     pub(super) glyphs: &'static [FileGlyph],
     pub(super) glyph_material: StandardMaterial,
+    pub(super) glyph_texture: GlyphTexture,
     pub(super) file_glyph_transform: Transform,
     pub(super) file_tile: Option<FileTile>,
     pub(super) membership_radii: Vec2,
@@ -44,9 +45,16 @@ pub(super) struct Theme {
 }
 
 pub(super) struct FileGlyph {
-    pub(super) png: &'static [u8],
-    filenames: &'static [&'static str],
-    extensions: &'static [&'static str],
+    pub(super) svg: &'static str,
+    filenames: Vec<String>,
+    extensions: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct GlyphTexture {
+    pub(super) size: u16,
+    pub(super) mipmaps: bool,
+    pub(super) padding: f32,
 }
 
 #[derive(Clone)]
@@ -71,7 +79,12 @@ impl Theme {
             ..default()
         };
         Self {
-            glyphs: material::GLYPHS,
+            glyphs: icons::material(),
+            glyph_texture: GlyphTexture {
+                size: 256,
+                mipmaps: true,
+                padding: 1.0 / 32.0,
+            },
             glyph_material: StandardMaterial {
                 base_color: Color::WHITE,
                 alpha_mode: AlphaMode::Blend,
@@ -253,10 +266,10 @@ mod tests {
         let mut filenames = std::collections::HashSet::new();
         let mut extensions = std::collections::HashSet::new();
         for glyph in theme.glyphs {
-            for name in glyph.filenames {
+            for name in &glyph.filenames {
                 assert!(filenames.insert(name), "duplicate filename {name}");
             }
-            for extension in glyph.extensions {
+            for extension in &glyph.extensions {
                 assert!(
                     extensions.insert(extension),
                     "duplicate extension {extension}"
@@ -274,7 +287,7 @@ mod tests {
         );
         let art: std::collections::HashSet<_> = kinds
             .into_iter()
-            .map(|kind| theme.glyphs[kind].png)
+            .map(|kind| theme.glyphs[kind].svg)
             .collect();
         assert_eq!(art.len(), 5);
         assert!(!kinds.contains(&0));

@@ -134,5 +134,6 @@ Changes go through feature branches and pull requests.
 - [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme)
   (MIT) — file icons.
 - [Bevy](https://bevy.org/) — rendering and application framework.
+- [resvg](https://github.com/linebender/resvg) — startup SVG rasterisation.
 - [gix](https://github.com/GitoxideLabs/gitoxide) — Git history access.
 - [Gource](https://gource.io/) — inspiration for animated Git history.
