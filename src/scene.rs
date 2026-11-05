@@ -16,6 +16,7 @@ use bevy::{
 };
 
 use crate::{
+    layout::Layout,
     model::{self, Simulation},
     theme::Theme,
 };
@@ -68,6 +69,7 @@ struct Palette {
     spines: Vec<Handle<StandardMaterial>>,
     avatars: Vec<Handle<StandardMaterial>>,
     glass: Vec<Handle<StandardMaterial>>,
+    directories: Vec<Vec<Handle<StandardMaterial>>>,
 }
 
 impl Palette {
@@ -97,6 +99,16 @@ impl Palette {
             .each_ref()
             .map(|material| materials.add(material.clone()))
             .to_vec();
+        let directories = theme
+            .directories
+            .iter()
+            .map(|depths| {
+                depths
+                    .iter()
+                    .map(|material| materials.add(material.clone()))
+                    .collect()
+            })
+            .collect();
         Self {
             theme: theme.clone(),
             cube,
@@ -110,6 +122,39 @@ impl Palette {
             spines,
             avatars,
             glass,
+            directories,
+        }
+    }
+
+    fn directory(&self, slot: usize, depth: u16) -> &Handle<StandardMaterial> {
+        if depth == 0 {
+            return &self.edge;
+        }
+        let depths = &self.directories[slot % self.directories.len()];
+        &depths[usize::from(depth - 1).min(depths.len() - 1)]
+    }
+}
+
+#[derive(Default)]
+struct DirectoryHues {
+    slots: Vec<usize>,
+    top_levels: usize,
+}
+
+impl DirectoryHues {
+    fn sync(&mut self, layout: &Layout) {
+        // Retired directories count too, so frame sampling cannot shift later hues.
+        for index in self.slots.len()..layout.dir_count() {
+            let slot = match layout.dir(index).parent {
+                None => 0,
+                Some(0) => {
+                    let slot = self.top_levels;
+                    self.top_levels += 1;
+                    slot
+                }
+                Some(parent) => self.slots[parent],
+            };
+            self.slots.push(slot);
         }
     }
 }
@@ -120,6 +165,8 @@ struct Pools {
     beams: Vec<Entity>,
     fragments: Vec<Entity>,
     edges: Vec<Entity>,
+    directories: Vec<Entity>,
+    hues: DirectoryHues,
     avatars: Vec<Entity>,
     grid: Vec<Entity>,
 }
@@ -416,13 +463,15 @@ fn sync_structure(
     simulation: &Simulation,
 ) {
     let layout = simulation.layout();
+    pools.hues.sync(layout);
     let edges: Vec<_> = layout
         .dirs()
-        .filter_map(|(_, dir)| {
+        .filter_map(|(index, dir)| {
             let parent = layout.dir(dir.parent?);
             Some((
                 ground(parent.position) - Vec3::Y * 0.05,
                 ground(dir.position) - Vec3::Y * 0.05,
+                palette.directory(pools.hues.slots[index], dir.depth),
             ))
         })
         .collect();
@@ -433,10 +482,33 @@ fn sync_structure(
         &palette.beam,
         &palette.edge,
     );
-    for (entity, &(from, to)) in pool.iter().zip(&edges) {
-        place_beam(world, *entity, from, to, 0.6);
+    for (entity, (from, to, material)) in pool.iter().zip(&edges) {
+        place_beam(world, *entity, *from, *to, 0.6);
+        set_material(world, *entity, material);
     }
     hide_rest(world, pool, edges.len());
+    let dirs: Vec<_> = layout.dirs().collect();
+    let pool = grow(
+        world,
+        &mut pools.directories,
+        dirs.len(),
+        &palette.cube,
+        &palette.edge,
+    );
+    for (entity, &(index, dir)) in pool.iter().zip(&dirs) {
+        set_material(
+            world,
+            *entity,
+            palette.directory(pools.hues.slots[index], dir.depth),
+        );
+        if let Some(mut transform) = world.get_mut::<Transform>(*entity) {
+            *transform =
+                Transform::from_translation(ground(dir.position) - Vec3::Y * 0.05)
+                    .with_scale(palette.theme.directory_node_scale);
+        }
+        set_visible(world, *entity, true);
+    }
+    hide_rest(world, pool, dirs.len());
     let (focus, distance) = simulation.view();
     let extent = distance * 0.5;
     let spacing = 2.0_f32.powf((extent / 4.0).log2().ceil().max(0.0));
@@ -464,6 +536,21 @@ fn sync_structure(
         if let Some(mut transform) = world.get_mut::<Transform>(entity) {
             *transform = Transform::from_translation(translation).with_scale(scale);
         }
+    }
+}
+
+fn set_material(
+    world: &mut World,
+    entity: Entity,
+    material: &Handle<StandardMaterial>,
+) {
+    if world
+        .get::<MeshMaterial3d<StandardMaterial>>(entity)
+        .is_some_and(|current| current.0 != *material)
+    {
+        world
+            .entity_mut(entity)
+            .insert(MeshMaterial3d(material.clone()));
     }
 }
 
@@ -713,5 +800,93 @@ fn labels(world: &mut World) {
         && text.0 != caption
     {
         text.0 = caption;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subtree_slots_include_retired_directories_and_survive_reappearance() {
+        let mut layout = Layout::default();
+        layout.add("early/deep/a.rs", 0.0, 0);
+        layout.settle(120, 1.0 / 60.0);
+        layout.remove("early/deep/a.rs", 0.0, 0);
+        layout.settle(120, 1.0 / 60.0);
+        layout.add("later/a.rs", 0.0, 0);
+        let mut hues = DirectoryHues::default();
+        hues.sync(&layout);
+        assert_eq!(hues.slots, [0, 0, 0, 1]);
+        assert_eq!(layout.dirs().count(), 2);
+
+        layout.add("early/deep/b.rs", 0.0, 0);
+        layout.add("later/deeper/b.rs", 0.0, 0);
+        layout.add("new/a.rs", 0.0, 0);
+        hues.sync(&layout);
+        assert_eq!(hues.slots, [0, 0, 0, 1, 1, 2]);
+
+        let mut rewind = Layout::default();
+        rewind.add("early/deep/a.rs", 0.0, 0);
+        hues.sync(&rewind);
+        rewind.add("later/a.rs", 0.0, 0);
+        hues.sync(&rewind);
+        assert_eq!(&hues.slots[..rewind.dir_count()], &[0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn structure_reuses_materials_across_depth_growth_pool_reuse_and_rewind() {
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let theme = Theme::neon();
+        let palette = Palette::new(&mut world, &theme);
+        let materials = world.resource::<Assets<StandardMaterial>>().len();
+        let mut pools = Pools::default();
+        let mut simulation =
+            Simulation::new(&crate::timeline::synthetic(), &model::Options::default());
+        for frame in [0, 18, 120, 240, 0, 240] {
+            simulation.advance_to(frame, 30);
+            sync_structure(&mut world, &palette, &mut pools, &simulation);
+            assert_eq!(
+                world.resource::<Assets<StandardMaterial>>().len(),
+                materials
+            );
+            for (&entity, (index, dir)) in
+                pools.directories.iter().zip(simulation.layout().dirs())
+            {
+                assert_eq!(
+                    &world
+                        .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                        .expect("pooled nodes have materials")
+                        .0,
+                    palette.directory(pools.hues.slots[index], dir.depth),
+                );
+                assert_ne!(world.get::<Visibility>(entity), Some(&Visibility::Hidden));
+            }
+            for (&entity, (index, dir)) in pools.edges.iter().zip(
+                simulation
+                    .layout()
+                    .dirs()
+                    .filter(|(_, dir)| dir.parent.is_some()),
+            ) {
+                assert_eq!(
+                    &world
+                        .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                        .expect("pooled edges have materials")
+                        .0,
+                    palette.directory(pools.hues.slots[index], dir.depth),
+                );
+            }
+            for &entity in &pools.directories[simulation.layout().dirs().count()..] {
+                assert_eq!(world.get::<Visibility>(entity), Some(&Visibility::Hidden));
+            }
+        }
+        assert_eq!(palette.directory(0, 0), &palette.edge);
+        assert_eq!(palette.directory(0, u16::MAX), palette.directory(0, 4));
+        assert_eq!(
+            palette.directory(0, 1),
+            palette.directory(theme.directories.len(), 1)
+        );
     }
 }

@@ -12,6 +12,8 @@ pub(super) struct Theme {
     pub(super) spines: [StandardMaterial; 7],
     pub(super) avatars: [StandardMaterial; 6],
     pub(super) glass: [StandardMaterial; 6],
+    pub(super) directories: Vec<Vec<StandardMaterial>>,
+    pub(super) directory_node_scale: Vec3,
     pub(super) label: Color,
     pub(super) label_background: Color,
     pub(super) heading: Color,
@@ -59,6 +61,19 @@ impl Theme {
                 unlit: true,
                 ..default()
             }),
+            directories: [
+                200.0, 20.0, 275.0, 135.0, 335.0, 65.0, 225.0, 165.0, 305.0, 95.0,
+                355.0, 245.0,
+            ]
+            .map(|hue| {
+                [(0.52, 0.27), (0.48, 0.30), (0.44, 0.33), (0.40, 0.36)]
+                    .map(|(saturation, lightness)| {
+                        solid(Color::hsl(hue, saturation, lightness))
+                    })
+                    .to_vec()
+            })
+            .to_vec(),
+            directory_node_scale: Vec3::new(0.24, 0.04, 0.24),
             label: Color::srgb(0.72, 0.83, 0.9),
             label_background: Color::srgba(0.008, 0.016, 0.03, 0.72),
             heading: Color::srgb(0.65, 0.8, 0.87),
