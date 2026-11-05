@@ -17,6 +17,7 @@ mod history;
 mod layout;
 mod model;
 mod scene;
+mod theme;
 mod timeline;
 
 use std::path::PathBuf;

@@ -15,21 +15,15 @@ use bevy::{
     winit::WinitPlugin,
 };
 
-use crate::model::{self, Simulation};
+use crate::{
+    model::{self, Simulation},
+    theme::Theme,
+};
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
 const LABELS: usize = 72;
 const GRID_LINES: i16 = 20;
-
-const NEON: [Color; 6] = [
-    Color::srgb(0.25, 0.92, 0.95),
-    Color::srgb(1.0, 0.6, 0.25),
-    Color::srgb(0.95, 0.35, 0.85),
-    Color::srgb(0.55, 1.0, 0.45),
-    Color::srgb(1.0, 0.9, 0.35),
-    Color::srgb(0.55, 0.6, 1.0),
-];
 
 #[derive(Resource)]
 pub(super) struct Frame {
@@ -62,6 +56,7 @@ struct FileVisual {
 
 #[derive(Resource)]
 struct Palette {
+    theme: Theme,
     cube: Handle<Mesh>,
     sphere: Handle<Mesh>,
     beam: Handle<Mesh>,
@@ -76,47 +71,34 @@ struct Palette {
 }
 
 impl Palette {
-    fn new(world: &mut World) -> Self {
+    fn new(world: &mut World, theme: &Theme) -> Self {
         let mut meshes = world.resource_mut::<Assets<Mesh>>();
         let cube = meshes.add(Cuboid::default());
         let sphere = meshes.add(Sphere::new(0.22));
         let beam = meshes.add(Cylinder::new(0.035, 1.0));
         let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
-        let mut solid = |color| {
-            materials.add(StandardMaterial {
-                base_color: color,
-                unlit: true,
-                ..default()
-            })
-        };
-        let paper = solid(Color::srgb(0.64, 0.76, 0.85));
-        let edge = solid(Color::srgb(0.09, 0.2, 0.28));
-        let grid = solid(Color::srgb(0.045, 0.09, 0.13));
-        let descending = solid(NEON[0]);
-        let rising = solid(NEON[1]);
-        let spines = [
-            Color::srgb(1.0, 0.55, 0.25),
-            Color::srgb(0.35, 0.65, 1.0),
-            Color::srgb(0.85, 0.9, 0.95),
-            Color::srgb(0.45, 0.95, 0.55),
-            Color::srgb(1.0, 0.85, 0.3),
-            Color::srgb(0.9, 0.4, 0.9),
-            Color::srgb(0.45, 0.5, 0.58),
-        ]
-        .map(&mut solid)
-        .to_vec();
-        let avatars = NEON.map(&mut solid).to_vec();
-        let glass = NEON
-            .map(|color| {
-                materials.add(StandardMaterial {
-                    base_color: color.with_alpha(0.32),
-                    alpha_mode: AlphaMode::Blend,
-                    unlit: true,
-                    ..default()
-                })
-            })
+        let paper = materials.add(theme.paper.clone());
+        let edge = materials.add(theme.edge.clone());
+        let grid = materials.add(theme.grid.clone());
+        let descending = materials.add(theme.descending.clone());
+        let rising = materials.add(theme.rising.clone());
+        let spines = theme
+            .spines
+            .each_ref()
+            .map(|material| materials.add(material.clone()))
+            .to_vec();
+        let avatars = theme
+            .avatars
+            .each_ref()
+            .map(|material| materials.add(material.clone()))
+            .to_vec();
+        let glass = theme
+            .glass
+            .each_ref()
+            .map(|material| materials.add(material.clone()))
             .to_vec();
         Self {
+            theme: theme.clone(),
             cube,
             sphere,
             beam,
@@ -128,18 +110,6 @@ impl Palette {
             spines,
             avatars,
             glass,
-        }
-    }
-
-    fn spine_kind(extension: &str) -> usize {
-        match extension {
-            "rs" | "c" | "cpp" | "h" | "go" => 0,
-            "py" | "pyi" | "ipynb" => 1,
-            "md" | "rst" | "txt" | "html" => 2,
-            "toml" | "yaml" | "yml" | "json" | "lock" | "cfg" | "ini" => 3,
-            "js" | "ts" | "tsx" | "jsx" | "mjs" => 4,
-            "sh" | "ps1" | "nix" | "snap" => 5,
-            _ => 6,
         }
     }
 }
@@ -156,7 +126,8 @@ struct Pools {
 
 fn app(simulation: Simulation, title: String) -> App {
     let mut app = App::new();
-    app.insert_resource(ClearColor(Color::srgb(0.012, 0.023, 0.04)))
+    let theme = Theme::neon();
+    app.insert_resource(ClearColor(theme.clear))
         .insert_resource(Playback(simulation))
         .insert_resource(Title(title))
         .init_resource::<Pools>()
@@ -235,15 +206,11 @@ fn setup(world: &mut World) {
             SceneCamera,
         ))
         .id();
-    let palette = Palette::new(world);
-    let floor =
-        world
-            .resource_mut::<Assets<StandardMaterial>>()
-            .add(StandardMaterial {
-                base_color: Color::srgb(0.02, 0.036, 0.06),
-                unlit: true,
-                ..default()
-            });
+    let theme = Theme::neon();
+    let palette = Palette::new(world, &theme);
+    let floor = world
+        .resource_mut::<Assets<StandardMaterial>>()
+        .add(theme.floor.clone());
     world.spawn((
         Mesh3d(palette.cube.clone()),
         MeshMaterial3d(floor),
@@ -266,13 +233,13 @@ fn setup(world: &mut World) {
         world.spawn((
             Text::new(""),
             TextFont::from_font_size(14.0),
-            TextColor(Color::srgb(0.72, 0.83, 0.9)),
+            TextColor(theme.label),
             Node {
                 position_type: PositionType::Absolute,
                 padding: UiRect::axes(px(3.0), px(1.0)),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.008, 0.016, 0.03, 0.72)),
+            BackgroundColor(theme.label_background),
             Visibility::Hidden,
             UiTargetCamera(camera),
             Label,
@@ -293,11 +260,12 @@ fn heading(
     top: f32,
     size: f32,
 ) -> Entity {
+    let heading_color = world.resource::<Palette>().theme.heading;
     world
         .spawn((
             Text::new(text),
             TextFont::from_font_size(size),
-            TextColor(Color::srgb(0.65, 0.8, 0.87)),
+            TextColor(heading_color),
             Node {
                 position_type: PositionType::Absolute,
                 left: px(left),
@@ -356,7 +324,7 @@ fn sync_files(
     });
     for (id, file) in layout.files() {
         let entity = *pools.files.entry(id).or_insert_with(|| {
-            spawn_file(world, palette, Palette::spine_kind(file.extension()))
+            spawn_file(world, palette, Theme::spine_kind(file.extension()))
         });
         let position = Vec3::new(file.position.x, 0.0, file.position.y);
         if let Some(mut transform) = world.get_mut::<Transform>(entity) {
@@ -367,7 +335,7 @@ fn sync_files(
             .get::<FileVisual>(entity)
             .expect("file entities are visuals");
         let (halo, current) = (visual.halo, visual.author);
-        let kind = Palette::spine_kind(file.extension());
+        let kind = Theme::spine_kind(file.extension());
         if visual.kind != kind {
             let spine = visual.spine;
             world
@@ -381,7 +349,7 @@ fn sync_files(
         let glowing = file.heat > 0.03;
         if glowing && current != Some(file.author) {
             world.entity_mut(halo).insert(MeshMaterial3d(
-                palette.glass[file.author % NEON.len()].clone(),
+                palette.glass[file.author % palette.glass.len()].clone(),
             ));
             world
                 .get_mut::<FileVisual>(entity)
@@ -511,7 +479,7 @@ fn sync_activity(
         let entity = world
             .spawn((
                 Mesh3d(palette.sphere.clone()),
-                MeshMaterial3d(palette.avatars[index % NEON.len()].clone()),
+                MeshMaterial3d(palette.avatars[index % palette.avatars.len()].clone()),
                 Transform::default(),
                 Visibility::Hidden,
             ))
@@ -545,7 +513,7 @@ fn sync_activity(
     }
     for (entity, beam) in pool.iter().zip(&beams) {
         world.entity_mut(*entity).insert(MeshMaterial3d(
-            palette.glass[beam.author % NEON.len()].clone(),
+            palette.glass[beam.author % palette.glass.len()].clone(),
         ));
         place_beam(
             world,
@@ -717,6 +685,8 @@ fn labels(world: &mut World) {
         }
     }
     let mut query = world.query_filtered::<(&mut Text, &mut Node, &mut Visibility, &mut TextColor), With<Label>>();
+    let theme = &world.resource::<Palette>().theme;
+    let (emphasis_color, landmark_color) = (theme.label_emphasis, theme.label_landmark);
     let mut chosen = chosen.into_iter();
     for (mut text, mut node, mut visibility, mut color) in query.iter_mut(world) {
         if let Some((point, label, emphasis)) = chosen.next() {
@@ -726,9 +696,9 @@ fn labels(world: &mut World) {
             node.left = px(point.x);
             node.top = px(point.y);
             let wanted = if emphasis {
-                Color::srgb(0.88, 0.95, 1.0)
+                emphasis_color
             } else {
-                Color::srgb(0.62, 0.86, 0.95)
+                landmark_color
             };
             if color.0 != wanted {
                 color.0 = wanted;
