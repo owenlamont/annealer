@@ -164,6 +164,52 @@ mod tests {
     }
 
     #[test]
+    fn changed_contributors_file_applies_on_a_cache_hit() {
+        let repo = fixture();
+        let cache = tempfile::tempdir().unwrap();
+        let config = cache.path().join("contributors.toml");
+        let cli = crate::Cli::parse_from([
+            "annealer",
+            "preview",
+            "--repository",
+            repo.path().to_str().unwrap(),
+            "--contributors",
+            config.to_str().unwrap(),
+        ]);
+        let Some(crate::Command::Preview { source }) = cli.command else {
+            panic!("preview command parsed")
+        };
+        for name in ["First", "Changed"] {
+            let text = format!(
+                r#"
+[[contributor]]
+name = "{name}"
+emails = ["author@example.invalid"]
+"#
+            );
+            fs::write(&config, text).unwrap();
+            let mappings =
+                crate::contributors::load(source.contributors.as_deref()).unwrap();
+            let events = source.events(Some(cache.path())).unwrap();
+            assert_eq!(events[0].author.name, b"Author");
+            assert_eq!(events[0].author.email, b"author@example.invalid");
+            assert!(events[0].contributor.is_none());
+            let mut sim = crate::model::Simulation::new(
+                &events,
+                &crate::model::Options::default(),
+                &crate::theme::Theme::neon(),
+                &mappings,
+            );
+            sim.advance_to(30, 30);
+            assert_eq!(sim.avatars()[0].name, name);
+            if name == "First" {
+                remove_blob(repo.path());
+                assert!(load(repo.path(), "HEAD", None).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn new_commit_misses_and_replaces_snapshot() {
         let repo = fixture();
         let cache = tempfile::tempdir().expect("cache directory is available");

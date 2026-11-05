@@ -47,7 +47,7 @@ pub(super) struct Commit {
 pub(super) struct Identity {
     raw_signature: Vec<u8>,
     pub(super) name: Vec<u8>,
-    email: Vec<u8>,
+    pub(super) email: Vec<u8>,
     pub(super) seconds: i64,
     offset_seconds: i32,
 }

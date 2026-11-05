@@ -13,6 +13,7 @@
 )]
 
 mod cache;
+mod contributors;
 mod export;
 mod history;
 mod layout;
@@ -70,6 +71,9 @@ struct Source {
     /// Import playback history without reading or writing the user cache.
     #[arg(long)]
     no_cache: bool,
+    /// Contributor TOML file; defaults to the Annealer user configuration directory.
+    #[arg(long)]
+    contributors: Option<PathBuf>,
     /// Commits laid out and settled before playback begins.
     #[arg(long, default_value_t = 0)]
     start: usize,
@@ -94,6 +98,7 @@ impl Source {
     }
 
     fn load(&self) -> anyhow::Result<(model::Simulation, String)> {
+        let mappings = contributors::load(self.contributors.as_deref())?;
         let events = self.events(cache::root().as_deref())?;
         let (events, title) = match &self.repository {
             Some(path) => {
@@ -115,7 +120,7 @@ impl Source {
             commits: self.commits,
         };
         Ok((
-            model::Simulation::new(&events, &options, &theme::Theme::neon()),
+            model::Simulation::new(&events, &options, &theme::Theme::neon(), &mappings),
             title,
         ))
     }

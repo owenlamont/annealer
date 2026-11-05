@@ -1086,6 +1086,7 @@ mod tests {
             &crate::timeline::synthetic(),
             &model::Options::default(),
             &theme,
+            &crate::contributors::Mappings::default(),
         );
         for frame in [0, 18, 120, 240, 0, 240] {
             simulation.advance_to(frame, 30);
@@ -1142,7 +1143,11 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(index, path)| Event {
-                author: "Ada".to_owned(),
+                author: crate::timeline::Identity {
+                    name: b"Ada".to_vec(),
+                    email: b"ada@example.invalid".to_vec(),
+                },
+                contributor: None,
                 seconds: i64::try_from(index).expect("small fixture"),
                 changes: vec![FileChange {
                     path: (*path).to_owned(),
@@ -1158,8 +1163,12 @@ mod tests {
                 }],
             })
             .collect();
-        let mut simulation =
-            Simulation::new(&events, &model::Options::default(), &Theme::neon());
+        let mut simulation = Simulation::new(
+            &events,
+            &model::Options::default(),
+            &Theme::neon(),
+            &crate::contributors::Mappings::default(),
+        );
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
         world.init_resource::<Assets<Image>>();
@@ -1212,7 +1221,11 @@ mod tests {
 
         let events = [
             Event {
-                author: "Ada".to_owned(),
+                author: crate::timeline::Identity {
+                    name: b"Ada".to_vec(),
+                    email: b"ada@example.invalid".to_vec(),
+                },
+                contributor: None,
                 seconds: 0,
                 changes: vec![FileChange {
                     path: "alpha/a.rs".to_owned(),
@@ -1222,7 +1235,11 @@ mod tests {
                 }],
             },
             Event {
-                author: "Ada".to_owned(),
+                author: crate::timeline::Identity {
+                    name: b"Ada".to_vec(),
+                    email: b"ada@example.invalid".to_vec(),
+                },
+                contributor: None,
                 seconds: 1,
                 changes: vec![FileChange {
                     path: "beta/a.rs".to_owned(),
@@ -1234,8 +1251,12 @@ mod tests {
                 }],
             },
         ];
-        let mut simulation =
-            Simulation::new(&events, &model::Options::default(), &Theme::neon());
+        let mut simulation = Simulation::new(
+            &events,
+            &model::Options::default(),
+            &Theme::neon(),
+            &crate::contributors::Mappings::default(),
+        );
         let mut world = World::new();
         world.init_resource::<Assets<Mesh>>();
         world.init_resource::<Assets<Image>>();

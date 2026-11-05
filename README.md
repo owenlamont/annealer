@@ -109,6 +109,24 @@ uv run --script scripts/video_proof.py target/debug/annealer video-proof
 On Windows, use `target/debug/annealer.exe`. The output directory must be new.
 Run the script with `--help` for output retention and cleanup instructions.
 
+## Contributor aliases
+
+Preview and export read `contributors.toml` from the user configuration directory's
+`annealer/` folder (`dirs::config_dir()/annealer/`). Override the file with
+`--contributors /path/to/contributors.toml`:
+
+```toml
+[[contributor]]
+name = "Owen Lamont"   # display name
+emails = ["owen@personal.example", "owen@work.example"]
+```
+
+Emails match case-insensitively; duplicate emails are errors. Names alone never merge
+people. Unlisted emails keep separate identities, displayed with the name from the last
+commit in playback order. A missing default file is fine; an explicit missing file or
+malformed TOML is an error. Edits take effect on cache hits; original authors and
+repository history remain unchanged.
+
 ## Development
 
 Rust 1.99.1, rustfmt and Clippy are pinned in `rust-toolchain.toml`.
