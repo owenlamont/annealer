@@ -98,6 +98,14 @@ pub(super) struct Hunk {
 }
 
 pub(super) fn import(path: &Path, revision: &str) -> Result<History, Error> {
+    let (repo, tip) = resolve(path, revision)?;
+    import_resolved(&repo, tip)
+}
+
+pub(super) fn resolve(
+    path: &Path,
+    revision: &str,
+) -> Result<(gix::Repository, gix::ObjectId), Error> {
     let mut repo = gix::open(path).map_err(|source| Error::Open {
         path: path.to_owned(),
         source,
@@ -112,7 +120,14 @@ pub(super) fn import(path: &Path, revision: &str) -> Result<History, Error> {
             source,
         })?
         .id;
-    load(&repo, tip).map_err(|source| Error::History { tip, source })
+    Ok((repo, tip))
+}
+
+pub(super) fn import_resolved(
+    repo: &gix::Repository,
+    tip: gix::ObjectId,
+) -> Result<History, Error> {
+    load(repo, tip).map_err(|source| Error::History { tip, source })
 }
 
 fn load(repo: &gix::Repository, tip: gix::ObjectId) -> anyhow::Result<History> {
