@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-#[derive(Resource, Clone)]
+#[derive(Clone)]
 pub(super) struct Theme {
     pub(super) clear: Color,
     pub(super) paper: StandardMaterial,

@@ -56,6 +56,7 @@ struct FileVisual {
 
 #[derive(Resource)]
 struct Palette {
+    theme: Theme,
     cube: Handle<Mesh>,
     sphere: Handle<Mesh>,
     beam: Handle<Mesh>,
@@ -97,6 +98,7 @@ impl Palette {
             .map(|material| materials.add(material.clone()))
             .to_vec();
         Self {
+            theme: theme.clone(),
             cube,
             sphere,
             beam,
@@ -126,7 +128,6 @@ fn app(simulation: Simulation, title: String) -> App {
     let mut app = App::new();
     let theme = Theme::neon();
     app.insert_resource(ClearColor(theme.clear))
-        .insert_resource(theme)
         .insert_resource(Playback(simulation))
         .insert_resource(Title(title))
         .init_resource::<Pools>()
@@ -205,7 +206,7 @@ fn setup(world: &mut World) {
             SceneCamera,
         ))
         .id();
-    let theme = world.resource::<Theme>().clone();
+    let theme = Theme::neon();
     let palette = Palette::new(world, &theme);
     let floor = world
         .resource_mut::<Assets<StandardMaterial>>()
@@ -259,7 +260,7 @@ fn heading(
     top: f32,
     size: f32,
 ) -> Entity {
-    let heading_color = world.resource::<Theme>().heading;
+    let heading_color = world.resource::<Palette>().theme.heading;
     world
         .spawn((
             Text::new(text),
@@ -684,7 +685,7 @@ fn labels(world: &mut World) {
         }
     }
     let mut query = world.query_filtered::<(&mut Text, &mut Node, &mut Visibility, &mut TextColor), With<Label>>();
-    let theme = world.resource::<Theme>();
+    let theme = &world.resource::<Palette>().theme;
     let (emphasis_color, landmark_color) = (theme.label_emphasis, theme.label_landmark);
     let mut chosen = chosen.into_iter();
     for (mut text, mut node, mut visibility, mut color) in query.iter_mut(world) {
