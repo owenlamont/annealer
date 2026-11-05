@@ -1,0 +1,99 @@
+use std::{fs::File, io::Write, path::Path, time::Instant};
+
+use super::*;
+
+fn overlapping_pairs_per_dir(dirs: &[(Vec2, f32)]) -> f64 {
+    let mut pairs = 0_u32;
+    for (index, a) in dirs.iter().enumerate() {
+        for b in &dirs[index + 1..] {
+            if a.0.distance(b.0) < a.1 + b.1 {
+                pairs += 1;
+            }
+        }
+    }
+    let count = u32::try_from(dirs.len()).expect("directory count fits u32");
+    f64::from(pairs) / f64::from(count.max(1))
+}
+
+#[test]
+#[ignore = "requires ANNEALER_MEASURE_REPOSITORY and ANNEALER_MEASURE_OUTPUT"]
+fn sampled_history_overlap() {
+    let repository = std::env::var("ANNEALER_MEASURE_REPOSITORY").unwrap();
+    let output = std::env::var("ANNEALER_MEASURE_OUTPUT").unwrap();
+    let started = Instant::now();
+    let events = crate::cache::load(
+        Path::new(&repository),
+        "HEAD",
+        crate::cache::root().as_deref(),
+    )
+    .expect("measurement repository imports");
+    eprintln!(
+        "load_seconds={:.6},events={}",
+        started.elapsed().as_secs_f64(),
+        events.len()
+    );
+    let started = Instant::now();
+    let mut layout = Layout::planned(&events);
+    eprintln!(
+        "plan_seconds={:.6},directories={}",
+        started.elapsed().as_secs_f64(),
+        layout.dir_count()
+    );
+    if std::env::var_os("ANNEALER_MEASURE_PLAN_ONLY").is_some() {
+        return;
+    }
+    let mut csv = File::create(output).unwrap();
+    writeln!(csv, "tick,commit,dirs,overlapping_pairs_per_dir").unwrap();
+    let total = frames_for(LEAD_IN + count(events.len()) * 0.02 + TAIL, 60);
+    let intervals = total.min(300);
+    let mut next_event = 0;
+    let mut sum = 0.0;
+    let mut maximum = 0.0_f64;
+    let mut sample = 0;
+    for tick in 0..=total {
+        if tick > 0 {
+            let now = tick_time(u64::from(tick));
+            while let Some(event) = events.get(next_event) {
+                if LEAD_IN + 0.02 * count(next_event) > now {
+                    break;
+                }
+                for change in &event.changes {
+                    apply(&mut layout, change, 0);
+                }
+                next_event += 1;
+            }
+            layout.step(tick_seconds());
+        }
+        if tick == total * sample / intervals {
+            let discs: Vec<_> = layout
+                .dirs()
+                .map(|(_, dir)| (dir.position, dir.radius()))
+                .collect();
+            let value = overlapping_pairs_per_dir(&discs);
+            writeln!(csv, "{tick},{next_event},{},{value:.9}", discs.len()).unwrap();
+            sum += value;
+            maximum = maximum.max(value);
+            if sample % 30 == 0 {
+                eprintln!(
+                    "sample={sample}/{intervals},commit={next_event}/{}",
+                    events.len()
+                );
+            }
+            sample += 1;
+        }
+    }
+    eprintln!(
+        "samples={sample},mean={:.9},max={maximum:.9}",
+        sum / f64::from(sample)
+    );
+}
+
+#[test]
+fn metric_counts_each_pair_once_and_excludes_tangencies() {
+    assert_eq!(overlapping_pairs_per_dir(&[]), 0.0);
+    assert_eq!(overlapping_pairs_per_dir(&[(Vec2::ZERO, 1.0); 3]), 1.0);
+    assert_eq!(
+        overlapping_pairs_per_dir(&[(Vec2::ZERO, 1.0), (Vec2::X * 2.0, 1.0)]),
+        0.0
+    );
+}

@@ -11,6 +11,9 @@ use crate::{
     timeline::{Event, Kind},
 };
 
+#[cfg(test)]
+mod measurement;
+
 pub(super) const TICK_RATE: u32 = 60;
 pub(super) const PREVIEW_FPS: u16 = 30;
 const LEAD_IN: f32 = 0.5;
@@ -126,7 +129,7 @@ impl Simulation {
             .map_or(events.len(), |count| (start + count).min(events.len()));
         let mut state = State {
             tick: 0,
-            layout: Layout::default(),
+            layout: Layout::planned(events),
             avatars: Vec::new(),
             authors: HashMap::new(),
             next_event: 0,
@@ -979,6 +982,31 @@ mod tests {
         assert!(paths.contains(&"src/scene/layout.rs"));
         assert!(!paths.contains(&"src/old.rs"));
         assert!(!paths.contains(&"docs/guide.md"));
+    }
+
+    #[test]
+    fn playback_slices_use_the_whole_history_plan() {
+        let events = timeline::synthetic();
+        let mut whole = Simulation::new(&events, &Options::default(), &Theme::neon());
+        whole.advance_to(frames_for(whole.duration(), 30), 30);
+        let slice = Simulation::new(
+            &events,
+            &Options {
+                start: 8,
+                commits: Some(1),
+                ..Options::default()
+            },
+            &Theme::neon(),
+        );
+        let plan = |sim: &Simulation| {
+            (0..sim.layout().dir_count())
+                .map(|index| {
+                    let dir = sim.layout().dir(index);
+                    (dir.path.clone(), dir.position)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(plan(&whole), plan(&slice));
     }
 
     #[test]

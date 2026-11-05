@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use bevy::math::Vec2;
 
+mod planner;
+
 const SPACING: f32 = 0.62;
 const GOLDEN_ANGLE: f32 = 2.399_963_2;
 const GAP: f32 = 0.8;
@@ -66,7 +68,7 @@ impl Dir {
     }
 }
 
-/// Persistent file and directory positions on the ground plane, relaxed incrementally.
+/// Persistent file and directory positions on the ground plane.
 #[derive(Clone, Debug)]
 pub(super) struct Layout {
     dirs: Vec<Dir>,
@@ -74,6 +76,7 @@ pub(super) struct Layout {
     files: BTreeMap<u64, File>,
     file_index: HashMap<String, u64>,
     next_id: u64,
+    planned: bool,
 }
 
 impl Default for Layout {
@@ -95,6 +98,7 @@ impl Default for Layout {
             files: BTreeMap::new(),
             file_index: HashMap::new(),
             next_id: 0,
+            planned: false,
         }
     }
 }
@@ -223,7 +227,9 @@ impl Layout {
     pub(super) fn step(&mut self, dt: f32) {
         self.fade_files(dt);
         self.prune_empty();
-        self.relax(dt);
+        if !self.planned {
+            self.relax(dt);
+        }
         let ease = 1.0 - (-FILE_EASE * dt).exp();
         for file in self.files.values_mut() {
             let target = self.dirs[file.dir].position + spiral(file.slot);
@@ -348,7 +354,11 @@ impl Layout {
             if !self.dirs[index].live {
                 let parent = self.ensure_dir(parent_path(path));
                 self.dirs[parent].children += 1;
-                let position = self.spawn_position(parent, path);
+                let position = if self.planned {
+                    self.dirs[index].position
+                } else {
+                    self.spawn_position(parent, path)
+                };
                 let dir = &mut self.dirs[index];
                 dir.live = true;
                 dir.position = position;
