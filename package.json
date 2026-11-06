@@ -1,0 +1,50 @@
+{
+  "author": "Owen Lamont",
+  "bin": {
+    "codestrand": "bin/codestrand.js"
+  },
+  "bugs": {
+    "url": "https://github.com/owenlamont/codestrand/issues"
+  },
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "description": "A Git history visualiser with restrained 3D depth and animated diffs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "bin/",
+    "npm-platforms.json",
+    "README.md",
+    "LICENSE",
+    "LICENSE-APACHE",
+    "assets/material/LICENSE.txt"
+  ],
+  "homepage": "https://github.com/owenlamont/codestrand#readme",
+  "keywords": [
+    "git",
+    "visualization",
+    "history",
+    "animation",
+    "cli"
+  ],
+  "license": "MIT OR Apache-2.0",
+  "name": "@owenlamont/codestrand",
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/owenlamont/codestrand.git"
+  },
+  "sideEffects": false,
+  "type": "commonjs",
+  "version": "0.1.0"
+}
