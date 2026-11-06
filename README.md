@@ -78,7 +78,7 @@ commits before playback; `--commits` limits what plays after it. Preview loops;
 Escape closes the window. WASD pans in free-camera mode, right-drag orbits, and
 the scroll wheel zooms. Tab follows/cycles currently visible contributors; WASD
 returns to free mode. Follow also returns to free mode when the target fades out.
-Home smoothly restores the fit-to-scene camera in half a second. The caption
+Space smoothly restores the fit-to-scene camera in half a second. The caption
 shows the camera mode and follow target. Export always uses the default camera and
 writes 1280×720 frames for the whole playback at 30 fps unless `--frames` or `--fps`
 say otherwise. The output directory must not

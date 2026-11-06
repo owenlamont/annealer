@@ -4,7 +4,7 @@ use bevy::{
     asset::RenderAssetUsages,
     camera::RenderTarget,
     image::ImageSampler,
-    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
+    input::mouse::{AccumulatedMouseScroll, MouseScrollUnit},
     prelude::*,
     render::{
         RenderPlugin,
@@ -373,11 +373,14 @@ fn preview_clock(world: &mut World) {
     }
 }
 
-fn preview_camera(world: &mut World) {
+fn preview_camera(world: &mut World, mut drag_from: Local<Option<Vec2>>) {
     let mut windows = world.query::<&Window>();
-    let focused = windows.iter(world).any(|window| window.focused);
+    let cursor = windows
+        .iter(world)
+        .find(|window| window.focused)
+        .map(Window::cursor_position);
     let mut input = Input::default();
-    if focused {
+    if let Some(cursor) = cursor {
         let keys = world.resource::<ButtonInput<KeyCode>>();
         let axis = |positive, negative| {
             f32::from(u8::from(keys.pressed(positive)))
@@ -389,13 +392,15 @@ fn preview_camera(world: &mut World) {
         )
         .normalize_or_zero();
         input.cycle = keys.just_pressed(KeyCode::Tab);
-        input.reset = keys.just_pressed(KeyCode::Home);
-        if world
+        input.reset = keys.just_pressed(KeyCode::Space);
+        let dragging = world
             .resource::<ButtonInput<MouseButton>>()
-            .pressed(MouseButton::Right)
-        {
-            input.orbit = world.resource::<AccumulatedMouseMotion>().delta;
+            .pressed(MouseButton::Right);
+        // WSLg reports raw device motion as absolute positions, so orbit follows the cursor.
+        if let (true, Some(from), Some(to)) = (dragging, *drag_from, cursor) {
+            input.orbit = to - from;
         }
+        *drag_from = cursor.filter(|_| dragging);
         let scroll = world.resource::<AccumulatedMouseScroll>();
         input.zoom = scroll.delta.y
             * match scroll.unit {
