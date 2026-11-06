@@ -385,9 +385,11 @@ jobs:
           )
           package_name="${package_metadata[0]}"
           package_version="${package_metadata[1]}"
-          echo "name=${package_name}" >> "${GITHUB_OUTPUT}"
-          echo "version=${package_version}" >> "${GITHUB_OUTPUT}"
-          echo "tarball_path=${tarball_path}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "name=${package_name}"
+            echo "version=${package_version}"
+            echo "tarball_path=${tarball_path}"
+          } >> "${GITHUB_OUTPUT}"
       - name: Check if NPM version already exists
         id: npm_exists
         env:
@@ -484,9 +486,11 @@ jobs:
           )
           package_name="${package_metadata[0]}"
           package_version="${package_metadata[1]}"
-          echo "name=${package_name}" >> "${GITHUB_OUTPUT}"
-          echo "version=${package_version}" >> "${GITHUB_OUTPUT}"
-          echo "tarball_path=${tarball_path}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "name=${package_name}"
+            echo "version=${package_version}"
+            echo "tarball_path=${tarball_path}"
+          } >> "${GITHUB_OUTPUT}"
       - name: Check if NPM version already exists
         id: npm_exists
         env:
