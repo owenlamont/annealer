@@ -51,5 +51,10 @@ toml = { version = "1.1.8", default-features = false, features = ["parse", "serd
 [profile.dev]
 debug = 0
 
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
