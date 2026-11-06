@@ -12,7 +12,7 @@ of changes, each commit woven into the structure the last ones left behind.
 history with persistent file positions, gliding contributors, coordinated commit
 beams, labels and diff fragments. Preview and numbered PNG export share one
 deterministic simulation. Built-in video encoding is not implemented. Licensed MIT OR
-Apache-2.0; Cargo publishing is disabled.
+Apache-2.0.
 
 ## Visual goal
 

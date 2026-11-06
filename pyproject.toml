@@ -1,0 +1,33 @@
+[build-system]
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "codestrand"
+version = "0.1.0"
+description = "A Git history visualiser with restrained 3D depth and animated diffs"
+requires-python = ">=3.11"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE", "LICENSE-APACHE", "assets/material/LICENSE.txt"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Rust",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+keywords = ["git", "visualization", "history", "animation"]
+
+[project.urls]
+Homepage = "https://github.com/owenlamont/codestrand"
+Repository = "https://github.com/owenlamont/codestrand"
+Issues = "https://github.com/owenlamont/codestrand/issues"
+
+[tool.maturin]
+bindings = "bin"
+sdist = true

@@ -9,7 +9,7 @@ proof reports on issues.
 ## Workflow
 
 - Use a feature branch and PR for changes; never merge without Owen's approval.
-- Keep Cargo publishing disabled until distribution is settled.
+- Publish a release only with Owen's approval.
 - Use the installed engineering, Rust, docs and review skills as applicable.
 - Review a PR before requesting merge approval, including the adversarial round.
 - Stay near current stable Bevy releases; handle upgrades in feature branches.

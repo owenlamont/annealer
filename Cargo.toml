@@ -10,7 +10,17 @@ repository = "https://github.com/owenlamont/codestrand"
 categories = ["visualization", "development-tools"]
 keywords = ["git", "visualization", "history", "animation"]
 license = "MIT OR Apache-2.0"
-publish = false
+include = [
+  "/Cargo.lock",
+  "/Cargo.toml",
+  "/LICENSE",
+  "/LICENSE-APACHE",
+  "/README.md",
+  "/assets/**",
+  "/pyproject.toml",
+  "/rust-toolchain.toml",
+  "/src/**",
+]
 
 [dependencies]
 anyhow = "1"
