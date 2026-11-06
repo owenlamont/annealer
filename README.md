@@ -11,9 +11,8 @@ a structure gradually settling as changes reshape the repository.
 **Status: layout study.** Playback lays out a local repository or a built-in synthetic
 history with persistent file positions, gliding contributors, coordinated commit
 beams, labels and diff fragments. Preview and numbered PNG export share one
-deterministic simulation. Built-in video encoding is not implemented. The repository
-remains private; licensing and distribution are deferred, and Cargo publishing is
-disabled.
+deterministic simulation. Built-in video encoding is not implemented. Licensed MIT OR
+Apache-2.0; Cargo publishing is disabled.
 
 ## Visual goal
 

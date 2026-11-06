@@ -1,6 +1,6 @@
 # Annealer
 
-Private Git history visualisation experiment, intended for a later public release.
+Git history visualisation experiment, public and licensed MIT OR Apache-2.0.
 The README separates the rendering probe from future goals. Keep Git import,
 rendering and export work in separately scoped issues.
 Reserve `docs/` for user-facing documentation rendered to HTML; keep research and
@@ -9,8 +9,7 @@ proof reports on issues.
 ## Workflow
 
 - Use a feature branch and PR for changes; never merge without Owen's approval.
-- Keep the repository private until Owen explicitly requests a visibility change.
-- Keep publishing disabled until licensing and distribution are settled.
+- Keep Cargo publishing disabled until distribution is settled.
 - Use the installed engineering, Rust, docs and review skills as applicable.
 - Review a PR before requesting merge approval, including the adversarial round.
 - Stay near current stable Bevy releases; handle upgrades in feature branches.
