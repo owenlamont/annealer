@@ -174,19 +174,30 @@ impl PreviewCamera {
 mod tests {
     use super::*;
     use crate::{
+        contributors,
         model::{Options, Simulation},
         theme::Theme,
-        timeline::Event,
+        timeline::{self, Event},
     };
 
     fn avatars() -> Simulation {
-        let events = ["Ada", "Grace"].map(|name| Event {
-            author: name.to_owned(),
-            seconds: 0,
-            changes: Vec::new(),
-        });
-        let mut simulation =
-            Simulation::new(&events, &Options::default(), &Theme::neon());
+        let events = ["Ada", "Grace"]
+            .map(|name| Event {
+                author: timeline::Identity {
+                    name: name.as_bytes().to_vec(),
+                    email: Vec::new(),
+                },
+                contributor: None,
+                seconds: 0,
+                changes: Vec::new(),
+            })
+            .into();
+        let mut simulation = Simulation::new(
+            events,
+            &Options::default(),
+            &Theme::neon(),
+            &contributors::Mappings::default(),
+        );
         simulation.advance_to(2, 1);
         simulation
     }
@@ -391,9 +402,10 @@ mod tests {
     fn reset_finishes_within_half_a_second_while_playback_moves() {
         for start in [10, 60, 120] {
             let mut simulation = Simulation::new(
-                &crate::timeline::synthetic(),
+                crate::timeline::synthetic(),
                 &Options::default(),
                 &Theme::neon(),
+                &contributors::Mappings::default(),
             );
             simulation.advance_to(start, 30);
             let initial_view = simulation.view();
