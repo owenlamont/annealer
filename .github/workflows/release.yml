@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish to PyPI and crates.io
+        description: Publish to PyPI, crates.io and npm
         type: boolean
         default: false
 
@@ -31,13 +31,15 @@ jobs:
         name: Verify package and tag versions
         run: |
           python - <<'PY'
+          import json
           import os
           import tomllib
           from pathlib import Path
 
           cargo = tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"]
           python = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
-          assert cargo == python, "Cargo and Python versions differ"
+          npm = json.loads(Path("package.json").read_text())["version"]
+          assert cargo == python == npm, "Cargo, Python and npm versions differ"
           if os.environ["GITHUB_REF"].startswith("refs/tags/"):
               assert os.environ["GITHUB_REF_NAME"] == f"v{cargo}", "Tag version differs"
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
@@ -54,12 +56,12 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
           - os: macos-15
             target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -235,3 +237,275 @@ jobs:
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
         with:
           skip-existing: true
+
+  stage_npm_packages:
+    name: Stage npm packages
+    runs-on: ubuntu-latest
+    needs:
+      - draft-github-release
+      - wheels
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true))
+    outputs:
+      platform_matrix: ${{ steps.platform_matrix.outputs.value }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: binaries-*
+          merge-multiple: true
+          path: release-assets
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+        with:
+          enable-cache: false
+      - name: Build npm package directories
+        run: uv run --script scripts/build_npm_packages.py --assets-dir release-assets --out-dir dist/npm
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: '24'
+      - name: Pack npm packages
+        run: |-
+          set -euo pipefail
+          mkdir -p dist/npm-tarballs
+          for package_dir in dist/npm/*; do
+            [ -d "${package_dir}" ] || continue
+            (
+              cd "${package_dir}"
+              npm pack --pack-destination "${GITHUB_WORKSPACE}/dist/npm-tarballs"
+            )
+          done
+      - name: Compute npm platform matrix
+        id: platform_matrix
+        run: |-
+          set -euo pipefail
+          matrix_json="$(python3 - <<'PY'
+          import json
+          with open("npm-platforms.json", "r", encoding="utf-8") as handle:
+              platforms = json.load(handle)["platforms"]
+          matrix = [
+              {"folder_name": platform["folderName"], "package_name": platform["packageName"]}
+              for platform in platforms
+          ]
+          print(json.dumps(matrix, separators=(",", ":")))
+          PY
+          )"
+          echo "value=${matrix_json}" >> "${GITHUB_OUTPUT}"
+      - name: Upload packed npm packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: npm-packages
+          path: dist/npm-tarballs/*.tgz
+          if-no-files-found: error
+
+  publish_npm_platforms:
+    name: Publish npm platform package
+    runs-on: ubuntu-latest
+    needs:
+      - stage_npm_packages
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true))
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.stage_npm_packages.outputs.platform_matrix) }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: npm-packages
+          path: dist/npm-tarballs
+      - name: Verify Node and npm versions for Trusted Publishing
+        run: |-
+          set -euo pipefail
+          node --version
+          npm --version
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+
+          def parse(version: str) -> tuple[int, int, int]:
+              version = version.strip().removeprefix("v")
+              parts = version.split(".")
+              return tuple(int(part) for part in parts[:3])
+
+          node_version = subprocess.check_output(["node", "--version"], text=True).strip()
+          npm_version = subprocess.check_output(["npm", "--version"], text=True).strip()
+          min_node = (22, 14, 0)
+          min_npm = (11, 5, 1)
+
+          if parse(node_version) < min_node:
+              print(
+                  f"Node {node_version} is too old for npm Trusted Publishing; "
+                  f"need >= {'.'.join(map(str, min_node))}.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          if parse(npm_version) < min_npm:
+              print(
+                  f"npm {npm_version} is too old for npm Trusted Publishing; "
+                  f"need >= {'.'.join(map(str, min_npm))}.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          PY
+      - name: Read package metadata
+        id: package_metadata
+        env:
+          FOLDER_NAME: ${{ matrix.folder_name }}
+        run: |-
+          set -euo pipefail
+          tarball_path=$(find dist/npm-tarballs -maxdepth 1 -type f -name "*${FOLDER_NAME}-*.tgz" | head -n 1)
+          [ -n "${tarball_path}" ]
+          readarray -t package_metadata < <(python3 - "${tarball_path}" <<'PY'
+          import json
+          import sys
+          import tarfile
+
+          with tarfile.open(sys.argv[1], "r:gz") as archive:
+              package_json = json.load(archive.extractfile("package/package.json"))
+          print(package_json["name"])
+          print(package_json["version"])
+          PY
+          )
+          package_name="${package_metadata[0]}"
+          package_version="${package_metadata[1]}"
+          {
+            echo "name=${package_name}"
+            echo "version=${package_version}"
+            echo "tarball_path=${tarball_path}"
+          } >> "${GITHUB_OUTPUT}"
+      - name: Check if NPM version already exists
+        id: npm_exists
+        env:
+          PACKAGE_NAME: ${{ steps.package_metadata.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.package_metadata.outputs.version }}
+        run: |-
+          set -euo pipefail
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version > /dev/null 2>&1; then
+            echo "already_published=true" >> "${GITHUB_OUTPUT}"
+            echo "NPM package ${PACKAGE_NAME} ${PACKAGE_VERSION} already published; skipping upload."
+          else
+            echo "already_published=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Publish npm platform package (Trusted Publishing)
+        if: steps.npm_exists.outputs.already_published != 'true'
+        env:
+          TARBALL_PATH: ${{ steps.package_metadata.outputs.tarball_path }}
+        run: npm publish --provenance --access public "$TARBALL_PATH"
+
+  publish_npm_meta:
+    name: Publish npm meta-package
+    runs-on: ubuntu-latest
+    needs:
+      - stage_npm_packages
+      - publish_npm_platforms
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true))
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: npm-packages
+          path: dist/npm-tarballs
+      - name: Verify Node and npm versions for Trusted Publishing
+        run: |-
+          set -euo pipefail
+          node --version
+          npm --version
+          python - <<'PY'
+          import subprocess
+          import sys
+
+          def parse(version: str) -> tuple[int, int, int]:
+              version = version.strip().removeprefix("v")
+              parts = version.split(".")
+              return tuple(int(part) for part in parts[:3])
+
+          node_version = subprocess.check_output(["node", "--version"], text=True).strip()
+          npm_version = subprocess.check_output(["npm", "--version"], text=True).strip()
+          min_node = (22, 14, 0)
+          min_npm = (11, 5, 1)
+
+          if parse(node_version) < min_node:
+              print(
+                  f"Node {node_version} is too old for npm Trusted Publishing; "
+                  f"need >= {'.'.join(map(str, min_node))}.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          if parse(npm_version) < min_npm:
+              print(
+                  f"npm {npm_version} is too old for npm Trusted Publishing; "
+                  f"need >= {'.'.join(map(str, min_npm))}.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          PY
+      - name: Read package metadata
+        id: package_metadata
+        run: |-
+          set -euo pipefail
+          tarball_path="dist/npm-tarballs/owenlamont-codestrand-${GITHUB_REF_NAME#v}.tgz"
+          [ -f "${tarball_path}" ]
+          readarray -t package_metadata < <(python3 - "${tarball_path}" <<'PY'
+          import json
+          import sys
+          import tarfile
+
+          with tarfile.open(sys.argv[1], "r:gz") as archive:
+              package_json = json.load(archive.extractfile("package/package.json"))
+          print(package_json["name"])
+          print(package_json["version"])
+          PY
+          )
+          package_name="${package_metadata[0]}"
+          package_version="${package_metadata[1]}"
+          {
+            echo "name=${package_name}"
+            echo "version=${package_version}"
+            echo "tarball_path=${tarball_path}"
+          } >> "${GITHUB_OUTPUT}"
+      - name: Check if NPM version already exists
+        id: npm_exists
+        env:
+          PACKAGE_NAME: ${{ steps.package_metadata.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.package_metadata.outputs.version }}
+        run: |-
+          set -euo pipefail
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version > /dev/null 2>&1; then
+            echo "already_published=true" >> "${GITHUB_OUTPUT}"
+            echo "NPM package ${PACKAGE_NAME} ${PACKAGE_VERSION} already published; skipping upload."
+          else
+            echo "already_published=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Publish npm meta-package (Trusted Publishing)
+        if: steps.npm_exists.outputs.already_published != 'true'
+        env:
+          TARBALL_PATH: ${{ steps.package_metadata.outputs.tarball_path }}
+        run: npm publish --provenance --access public "$TARBALL_PATH"

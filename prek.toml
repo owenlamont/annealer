@@ -103,3 +103,32 @@ hooks = [
 repo = "https://github.com/rhysd/actionlint"
 rev = "v1.7.12"
 hooks = [{ id = "actionlint" }]
+
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "npm-packages",
+    name = "npm package builder tests",
+    entry = "uv run --script tests/test_build_npm_packages.py",
+    language = "system",
+    files = '^(scripts/build_npm_packages\.py|tests/test_build_npm_packages\.py|npm-platforms\.json|package\.json|bin/codestrand\.js|\.github/workflows/release\.yml)$',
+    pass_filenames = false,
+  },
+  {
+    id = "npm-package-json-lint",
+    name = "npm-package-json-lint",
+    entry = "npx --yes npm-package-json-lint .",
+    language = "system",
+    files = '(^package\.json$|^\.npmpackagejsonlintrc\.json$)',
+    pass_filenames = false,
+  },
+  {
+    id = "publint",
+    name = "publint",
+    entry = "npx --yes publint",
+    language = "system",
+    files = '^package\.json$',
+    pass_filenames = false,
+  },
+]

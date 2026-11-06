@@ -1,0 +1,78 @@
+{
+  "binaryName": "codestrand",
+  "metaPackageName": "@owenlamont/codestrand",
+  "packageScope": "@owenlamont",
+  "platforms": [
+    {
+      "archiveName": "codestrand-aarch64-apple-darwin.zip",
+      "binaryName": "codestrand",
+      "cpu": [
+        "arm64"
+      ],
+      "folderName": "codestrand-darwin-arm64",
+      "os": [
+        "darwin"
+      ],
+      "packageName": "@owenlamont/codestrand-darwin-arm64",
+      "target": "aarch64-apple-darwin"
+    },
+    {
+      "archiveName": "codestrand-aarch64-unknown-linux-gnu.zip",
+      "binaryName": "codestrand",
+      "cpu": [
+        "arm64"
+      ],
+      "folderName": "codestrand-linux-arm64-gnu",
+      "libc": [
+        "glibc"
+      ],
+      "os": [
+        "linux"
+      ],
+      "packageName": "@owenlamont/codestrand-linux-arm64-gnu",
+      "target": "aarch64-unknown-linux-gnu"
+    },
+    {
+      "archiveName": "codestrand-x86_64-unknown-linux-gnu.zip",
+      "binaryName": "codestrand",
+      "cpu": [
+        "x64"
+      ],
+      "folderName": "codestrand-linux-x64-gnu",
+      "libc": [
+        "glibc"
+      ],
+      "os": [
+        "linux"
+      ],
+      "packageName": "@owenlamont/codestrand-linux-x64-gnu",
+      "target": "x86_64-unknown-linux-gnu"
+    },
+    {
+      "archiveName": "codestrand-x86_64-pc-windows-msvc.zip",
+      "binaryName": "codestrand.exe",
+      "cpu": [
+        "x64"
+      ],
+      "folderName": "codestrand-win32-x64",
+      "os": [
+        "win32"
+      ],
+      "packageName": "@owenlamont/codestrand-win32-x64",
+      "target": "x86_64-pc-windows-msvc"
+    },
+    {
+      "archiveName": "codestrand-aarch64-pc-windows-msvc.zip",
+      "binaryName": "codestrand.exe",
+      "cpu": [
+        "arm64"
+      ],
+      "folderName": "codestrand-win32-arm64",
+      "os": [
+        "win32"
+      ],
+      "packageName": "@owenlamont/codestrand-win32-arm64",
+      "target": "aarch64-pc-windows-msvc"
+    }
+  ]
+}
