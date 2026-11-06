@@ -75,8 +75,13 @@ cargo run --locked --release -- export frames --repository /path/to/repository \
 Without `--repository`, the synthetic history plays, including a move between
 directories, deletions and a 65-file commit. `--start` lays out and settles earlier
 commits before playback; `--commits` limits what plays after it. Preview loops;
-Escape closes the window. Export writes 1280×720 frames for the whole playback at
-30 fps unless `--frames` or `--fps` say otherwise. The output directory must not
+Escape closes the window. WASD pans in free-camera mode, right-drag orbits, and
+the scroll wheel zooms. Tab follows/cycles currently visible contributors; WASD
+returns to free mode. Follow also returns to free mode when the target fades out.
+Space smoothly restores the fit-to-scene camera in half a second. The caption
+shows the camera mode and follow target. Export always uses the default camera and
+writes 1280×720 frames for the whole playback at 30 fps unless `--frames` or `--fps`
+say otherwise. The output directory must not
 already exist. Commits touching more than 24 files aim beams at directories instead.
 
 Repository playback caches the latest first-parent timeline and diff counts as JSON
