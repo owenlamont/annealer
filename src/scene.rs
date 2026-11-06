@@ -379,6 +379,7 @@ fn preview_camera(world: &mut World, mut drag_from: Local<Option<Vec2>>) {
         .iter(world)
         .find(|window| window.focused)
         .map(Window::cursor_position);
+    let previous = drag_from.take();
     let mut input = Input::default();
     if let Some(cursor) = cursor {
         let keys = world.resource::<ButtonInput<KeyCode>>();
@@ -397,7 +398,7 @@ fn preview_camera(world: &mut World, mut drag_from: Local<Option<Vec2>>) {
             .resource::<ButtonInput<MouseButton>>()
             .pressed(MouseButton::Right);
         // WSLg reports raw device motion as absolute positions, so orbit follows the cursor.
-        if let (true, Some(from), Some(to)) = (dragging, *drag_from, cursor) {
+        if let (true, Some(from), Some(to)) = (dragging, previous, cursor) {
             input.orbit = to - from;
         }
         *drag_from = cursor.filter(|_| dragging);
