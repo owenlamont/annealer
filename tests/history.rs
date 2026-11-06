@@ -53,7 +53,7 @@ fn commit(path: &Path, message: &str) {
 }
 
 fn inspect(path: &Path, revision: &str) -> Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_annealer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_codestrand"))
         .arg("inspect")
         .arg(path)
         .args(["--revision", revision])
@@ -298,7 +298,7 @@ fn history_matches_git_and_preserves_repository() {
 fn invalid_repository_and_revision_fail_without_json() {
     let scratch = tempfile::tempdir().unwrap();
     for revision in ["HEAD", "does-not-exist"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_annealer"))
+        let output = Command::new(env!("CARGO_BIN_EXE_codestrand"))
             .arg("inspect")
             .arg(scratch.path())
             .args(["--revision", revision])
@@ -382,7 +382,7 @@ fn shallow_history_fails_instead_of_inventing_a_root() {
             shallow.to_str().unwrap(),
         ],
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_annealer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_codestrand"))
         .arg("inspect")
         .arg(&shallow)
         .output()

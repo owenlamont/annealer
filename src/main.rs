@@ -72,7 +72,7 @@ struct Source {
     /// Import playback history without reading or writing the user cache.
     #[arg(long)]
     no_cache: bool,
-    /// Contributor TOML file; defaults to the Annealer user configuration directory.
+    /// Contributor TOML file; defaults to the Codestrand user configuration directory.
     #[arg(long)]
     contributors: Option<PathBuf>,
     /// Commits laid out and settled before playback begins.

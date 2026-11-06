@@ -1,12 +1,12 @@
 [package]
-name = "annealer"
+name = "codestrand"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99.1"
 description = "A Git history visualiser with restrained 3D depth and animated diffs"
 authors = ["Owen Lamont"]
 readme = "README.md"
-repository = "https://github.com/owenlamont/annealer"
+repository = "https://github.com/owenlamont/codestrand"
 categories = ["visualization", "development-tools"]
 keywords = ["git", "visualization", "history", "animation"]
 license = "MIT OR Apache-2.0"

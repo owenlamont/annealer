@@ -31,9 +31,9 @@ def main(
     environment = os.environ | {
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_AUTHOR_NAME": "Annealer fixture",
+        "GIT_AUTHOR_NAME": "Codestrand fixture",
         "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
-        "GIT_COMMITTER_NAME": "Annealer fixture",
+        "GIT_COMMITTER_NAME": "Codestrand fixture",
         "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
     }
 

@@ -45,11 +45,11 @@ fn compactness(layout: &Layout) -> (f64, f64, f64) {
 }
 
 #[test]
-#[ignore = "requires ANNEALER_MEASURE_REPOSITORY and ANNEALER_MEASURE_OUTPUT"]
+#[ignore = "requires CODESTRAND_MEASURE_REPOSITORY and CODESTRAND_MEASURE_OUTPUT"]
 fn sampled_history_overlap() {
-    let repository = std::env::var("ANNEALER_MEASURE_REPOSITORY").unwrap();
-    let output = std::env::var("ANNEALER_MEASURE_OUTPUT").unwrap();
-    let revision = std::env::var("ANNEALER_MEASURE_REVISION")
+    let repository = std::env::var("CODESTRAND_MEASURE_REPOSITORY").unwrap();
+    let output = std::env::var("CODESTRAND_MEASURE_OUTPUT").unwrap();
+    let revision = std::env::var("CODESTRAND_MEASURE_REVISION")
         .unwrap_or_else(|_| "HEAD".to_owned());
     let started = Instant::now();
     let events = crate::cache::load(
@@ -70,7 +70,7 @@ fn sampled_history_overlap() {
         started.elapsed().as_secs_f64(),
         layout.dir_count()
     );
-    if std::env::var_os("ANNEALER_MEASURE_PLAN_ONLY").is_some() {
+    if std::env::var_os("CODESTRAND_MEASURE_PLAN_ONLY").is_some() {
         return;
     }
     let mut csv = File::create(output).unwrap();
