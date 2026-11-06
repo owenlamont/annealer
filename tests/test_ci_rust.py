@@ -69,7 +69,7 @@ def _classify(*, repository: Path, event: str) -> subprocess.CompletedProcess[st
         pytest.param("AGENTS.md", "false", id="agent guidance"),
         pytest.param("docs/guide.md", "false", id="documentation"),
         pytest.param("docs/nested/guide.md", "false", id="nested documentation"),
-        pytest.param("assets/annealer.svg", "false", id="logo"),
+        pytest.param("assets/codestrand.svg", "false", id="logo"),
         pytest.param("src/main.rs", "true", id="rust"),
         pytest.param("Cargo.toml", "true", id="manifest"),
         pytest.param("Cargo.lock", "true", id="lockfile"),

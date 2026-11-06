@@ -139,24 +139,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "annealer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bevy",
- "clap",
- "dirs",
- "gix",
- "image",
- "resvg",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "toml",
-]
-
-[[package]]
 name = "annotate-snippets"
 version = "0.12.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1815,6 +1797,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "unicode-width",
+]
+
+[[package]]
+name = "codestrand"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy",
+ "clap",
+ "dirs",
+ "gix",
+ "image",
+ "resvg",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@ use std::process::Command;
 
 #[test]
 fn help_is_available_without_initialising_the_renderer() {
-    let output = Command::new(env!("CARGO_BIN_EXE_annealer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_codestrand"))
         .arg("--help")
         .output()
         .expect("CLI can start");
@@ -24,7 +24,7 @@ fn invalid_timing_is_rejected_before_creating_output() {
         ("--fps", "241"),
         ("--commit-seconds", "0"),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_annealer"))
+        let output = Command::new(env!("CARGO_BIN_EXE_codestrand"))
             .args(["export", ".", flag, value])
             .output()
             .expect("CLI can start");
@@ -35,7 +35,7 @@ fn invalid_timing_is_rejected_before_creating_output() {
 
 #[test]
 fn export_refuses_an_existing_directory() {
-    let output = Command::new(env!("CARGO_BIN_EXE_annealer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_codestrand"))
         .args(["export", env!("CARGO_MANIFEST_DIR")])
         .output()
         .expect("CLI can start");
@@ -50,7 +50,7 @@ fn export_refuses_an_existing_directory() {
 fn failed_import_leaves_no_export_directory() {
     let scratch = tempfile::tempdir().expect("temporary directory is available");
     let output_dir = scratch.path().join("frames");
-    let output = Command::new(env!("CARGO_BIN_EXE_annealer"))
+    let output = Command::new(env!("CARGO_BIN_EXE_codestrand"))
         .arg("export")
         .arg(&output_dir)
         .arg("--repository")

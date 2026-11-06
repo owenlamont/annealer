@@ -105,7 +105,7 @@ def _verify_probe(path: Path) -> None:
 @app.command()
 def main(
     *,
-    binary: Annotated[Path, typer.Argument(help="Built Annealer executable.")],
+    binary: Annotated[Path, typer.Argument(help="Built Codestrand executable.")],
     output: Annotated[
         Path, typer.Argument(help="New output directory; must not exist.")
     ],
@@ -118,7 +118,7 @@ def main(
     """
     binary = binary.resolve(strict=True)
     if not binary.is_file():
-        raise typer.BadParameter("Annealer executable must be a file")
+        raise typer.BadParameter("Codestrand executable must be a file")
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
     if ffmpeg is None or ffprobe is None:
@@ -126,7 +126,7 @@ def main(
     output = output.resolve()
     output.mkdir()
     frames = output / "frames"
-    video = output / "annealer.mp4"
+    video = output / "codestrand.mp4"
     _run(
         command=[ffmpeg, "-version"],
         log=output / "ffmpeg-version.txt",

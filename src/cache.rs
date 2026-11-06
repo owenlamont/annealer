@@ -16,7 +16,7 @@ struct Snapshot {
 }
 
 pub(super) fn root() -> Option<PathBuf> {
-    dirs::cache_dir().map(|path| path.join("annealer"))
+    dirs::cache_dir().map(|path| path.join("codestrand"))
 }
 
 pub(super) fn load(
@@ -169,7 +169,7 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let config = cache.path().join("contributors.toml");
         let cli = crate::Cli::parse_from([
-            "annealer",
+            "codestrand",
             "preview",
             "--repository",
             repo.path().to_str().unwrap(),
@@ -304,7 +304,7 @@ emails = ["author@example.invalid"]
         let repo = fixture();
         let cache = tempfile::tempdir().expect("cache directory is available");
         let cli = crate::Cli::parse_from([
-            "annealer",
+            "codestrand",
             "preview",
             "--repository",
             repo.path().to_str().unwrap(),

@@ -1,4 +1,4 @@
-# Annealer
+# Codestrand
 
 Git history visualisation experiment, public and licensed MIT OR Apache-2.0.
 The README separates the rendering probe from future goals. Keep Git import,
@@ -13,7 +13,7 @@ proof reports on issues.
 - Use the installed engineering, Rust, docs and review skills as applicable.
 - Review a PR before requesting merge approval, including the adversarial round.
 - Stay near current stable Bevy releases; handle upgrades in feature branches.
-- Read the [historical rendering reference](https://github.com/owenlamont/annealer/issues/12#issuecomment-6628967300)
+- Read the [historical rendering reference](https://github.com/owenlamont/codestrand/issues/12#issuecomment-6628967300)
   and upstream examples matching the current Bevy dependency before changing renderer code.
 
 ## Checks
