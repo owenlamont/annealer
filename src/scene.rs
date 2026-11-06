@@ -321,7 +321,8 @@ fn setup(world: &mut World) {
                 padding: UiRect::axes(px(3.0), px(1.0)),
                 ..default()
             },
-            BackgroundColor(theme.label_background),
+            theme.label_shadow,
+            ZIndex::default(),
             Visibility::Hidden,
             UiTargetCamera(camera),
             Label,
@@ -939,6 +940,44 @@ fn ground(point: Vec2) -> Vec3 {
     Vec3::new(point.x, 0.0, point.y)
 }
 
+fn place_labels(
+    mut wanted: Vec<(model::Label, Vec2, f32)>,
+    height: f32,
+) -> Vec<(model::Label, Vec2, f32)> {
+    wanted.sort_by_key(|(label, ..)| label.kind);
+    let mut placed: Vec<Rect> = Vec::new();
+    let mut chosen = Vec::new();
+    for (label, point, distance) in wanted {
+        let width = 8.0
+            + 8.6
+                * f32::from(
+                    u16::try_from(label.text.chars().count()).unwrap_or(u16::MAX),
+                );
+        let rect = Rect::from_corners(point, point + Vec2::new(width, height));
+        if rect.min.x < 0.0
+            || rect.min.y < 0.0
+            || rect.max.x > 1280.0
+            || rect.max.y > 720.0
+            || (label.kind != model::LabelKind::Avatar
+                && placed.iter().any(|other| !other.intersect(rect).is_empty()))
+        {
+            continue;
+        }
+        placed.push(rect);
+        chosen.push((label, point, distance));
+        if chosen.len() == LABELS {
+            break;
+        }
+    }
+    chosen.sort_by(|(a, _, a_distance), (b, _, b_distance)| {
+        let a_avatar = a.kind == model::LabelKind::Avatar;
+        let b_avatar = b.kind == model::LabelKind::Avatar;
+        a_avatar
+            .cmp(&b_avatar)
+            .then_with(|| b_distance.total_cmp(a_distance))
+    });
+    chosen
+}
 fn labels(world: &mut World) {
     let mut camera_query =
         world.query_filtered::<(&Camera, &GlobalTransform), With<SceneCamera>>();
@@ -952,43 +991,35 @@ fn labels(world: &mut World) {
         caption.push_str("  |  ");
         caption.push_str(&camera.caption());
     }
-    let mut wanted = playback.0.labels();
-    wanted.sort_by_key(|label| label.kind);
-    let mut placed: Vec<Rect> = Vec::new();
-    let mut chosen = Vec::new();
-    for label in wanted {
-        let Ok(point) = camera.world_to_viewport(&transform, label.position) else {
-            continue;
+    let geometry = playback.0.theme();
+    let wanted = playback.0.labels().into_iter().filter_map(|label| {
+        let point = camera.world_to_viewport(&transform, label.position).ok()?;
+        let anchor = if label.kind == model::LabelKind::Avatar {
+            label.position - geometry.avatar_label_offset
+        } else {
+            label.position
         };
-        let width = 8.0
-            + 8.6
-                * f32::from(
-                    u16::try_from(label.text.chars().count()).unwrap_or(u16::MAX),
-                );
-        let rect = Rect::from_corners(
-            point,
-            point + Vec2::new(width, playback.0.theme().label_height),
-        );
-        if rect.min.x < 0.0
-            || rect.min.y < 0.0
-            || rect.max.x > 1280.0
-            || rect.max.y > 720.0
-            || placed.iter().any(|other| !other.intersect(rect).is_empty())
-        {
-            continue;
-        }
-        placed.push(rect);
-        chosen.push((point, label.text, label.kind != model::LabelKind::Landmark));
-        if chosen.len() == LABELS {
-            break;
-        }
-    }
-    let mut query = world.query_filtered::<(&mut Text, &mut Node, &mut Visibility, &mut TextColor), With<Label>>();
+        let distance = transform.translation().distance_squared(anchor);
+        Some((label, point, distance))
+    });
+    let chosen = place_labels(wanted.collect(), geometry.label_height);
+    let mut query = world.query_filtered::<(
+        &mut Text,
+        &mut Node,
+        &mut Visibility,
+        &mut TextColor,
+        &mut ZIndex,
+    ), With<Label>>();
     let theme = &world.resource::<Palette>().theme;
     let (emphasis_color, landmark_color) = (theme.label_emphasis, theme.label_landmark);
     let mut chosen = chosen.into_iter();
-    for (mut text, mut node, mut visibility, mut color) in query.iter_mut(world) {
-        if let Some((point, label, emphasis)) = chosen.next() {
+    for (index, (mut text, mut node, mut visibility, mut color, mut z_index)) in
+        query.iter_mut(world).enumerate()
+    {
+        if let Some((label, point, _)) = chosen.next() {
+            z_index.0 = i32::try_from(index).expect("label pool fits in i32");
+            let emphasis = label.kind != model::LabelKind::Landmark;
+            let label = label.text;
             if text.0 != label {
                 text.0 = label;
             }
@@ -1018,6 +1049,103 @@ fn labels(world: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn projected_label(
+        text: &str,
+        kind: model::LabelKind,
+        point: Vec2,
+        distance: f32,
+    ) -> (model::Label, Vec2, f32) {
+        (
+            model::Label {
+                text: text.to_owned(),
+                kind,
+                position: Vec3::ZERO,
+            },
+            point,
+            distance,
+        )
+    }
+
+    #[test]
+    fn overlapping_avatar_names_survive_in_far_to_near_order() {
+        let point = Vec2::splat(100.0);
+        let chosen = place_labels(
+            vec![
+                projected_label("near", model::LabelKind::Avatar, point, 4.0),
+                projected_label("far", model::LabelKind::Avatar, point, 25.0),
+            ],
+            20.0,
+        );
+        assert_eq!(
+            chosen
+                .iter()
+                .map(|(label, ..)| label.text.as_str())
+                .collect::<Vec<_>>(),
+            ["far", "near"]
+        );
+    }
+
+    #[test]
+    fn directory_and_activity_labels_still_declutter_around_names() {
+        let point = Vec2::splat(100.0);
+        let separate = Vec2::splat(300.0);
+        let chosen = place_labels(
+            vec![
+                projected_label(
+                    "blocked directory",
+                    model::LabelKind::Landmark,
+                    point,
+                    1.0,
+                ),
+                projected_label(
+                    "blocked activity",
+                    model::LabelKind::Activity,
+                    point,
+                    1.0,
+                ),
+                projected_label("name", model::LabelKind::Avatar, point, 25.0),
+                projected_label("directory", model::LabelKind::Landmark, separate, 1.0),
+                projected_label("activity", model::LabelKind::Activity, separate, 1.0),
+                projected_label(
+                    "visible activity",
+                    model::LabelKind::Activity,
+                    Vec2::splat(500.0),
+                    1.0,
+                ),
+            ],
+            20.0,
+        );
+        assert_eq!(
+            chosen
+                .iter()
+                .map(|(label, ..)| label.text.as_str())
+                .collect::<Vec<_>>(),
+            ["directory", "visible activity", "name"]
+        );
+    }
+
+    #[test]
+    fn label_bounds_capacity_and_equal_distance_order_stay_stable() {
+        let mut wanted = vec![projected_label(
+            "outside",
+            model::LabelKind::Avatar,
+            Vec2::splat(-1.0),
+            1.0,
+        )];
+        wanted.extend((0..=LABELS).map(|index| {
+            projected_label(
+                &index.to_string(),
+                model::LabelKind::Avatar,
+                Vec2::splat(100.0),
+                1.0,
+            )
+        }));
+        let chosen = place_labels(wanted, 20.0);
+        assert_eq!(chosen.len(), LABELS);
+        assert_eq!(chosen[0].0.text, "0");
+        assert_eq!(chosen[LABELS - 1].0.text, (LABELS - 1).to_string());
+    }
 
     #[test]
     fn svg_glyphs_render_into_complete_colour_mip_chains() {
