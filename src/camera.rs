@@ -3,7 +3,10 @@ use bevy::{
     prelude::Resource,
 };
 
-use crate::model::{self, Avatar};
+use crate::{
+    contributors::Key,
+    model::{self, Avatar},
+};
 
 const MIN_PITCH: f32 = 0.05;
 const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_2 - 0.05;
@@ -12,7 +15,10 @@ const MAX_PITCH: f32 = std::f32::consts::FRAC_PI_2 - 0.05;
 enum Mode {
     Fit,
     Free,
-    Follow(String),
+    Follow {
+        key: Key,
+        name: String,
+    },
     Reset {
         focus: Vec3,
         distance: f32,
@@ -101,16 +107,16 @@ impl PreviewCamera {
                     *self = default;
                 }
             }
-            Mode::Free | Mode::Follow(_) => {
+            Mode::Free | Mode::Follow { .. } => {
                 self.yaw -= input.orbit.x * 0.004;
                 self.pitch =
                     (self.pitch + input.orbit.y * 0.004).clamp(MIN_PITCH, MAX_PITCH);
                 self.distance =
                     (self.distance * (-input.zoom * 0.12).exp()).clamp(1.0, 20_000.0);
-                if let Mode::Follow(name) = &self.mode {
+                if let Mode::Follow { key, .. } = &self.mode {
                     if let Some(avatar) = avatars
                         .iter()
-                        .find(|avatar| &avatar.name == name && avatar.presence > 0.0)
+                        .find(|avatar| &avatar.key == key && avatar.presence > 0.0)
                     {
                         self.focus =
                             self.focus.lerp(avatar.position, 1.0 - (-dt / 0.3).exp());
@@ -133,18 +139,18 @@ impl PreviewCamera {
         let visible: Vec<_> = avatars
             .iter()
             .filter(|avatar| avatar.presence > 0.0)
-            .collect();
+            .collect::<Vec<_>>();
         if visible.is_empty() {
             return;
         }
         let next = match &self.mode {
-            Mode::Follow(name) => visible
+            Mode::Follow { key, .. } => visible
                 .iter()
-                .position(|avatar| &avatar.name == name)
+                .position(|avatar| &avatar.key == key)
                 .map_or(0, |index| (index + 1) % visible.len()),
             _ => 0,
         };
-        self.mode = Mode::Follow(visible[next].name.clone());
+        self.mode = following(visible[next]);
     }
 
     pub(super) fn pose(&self) -> (Vec3, Vec3) {
@@ -164,9 +170,16 @@ impl PreviewCamera {
         match &self.mode {
             Mode::Fit => "Camera: fit".to_owned(),
             Mode::Free => "Camera: free".to_owned(),
-            Mode::Follow(name) => format!("Camera: follow {name}"),
+            Mode::Follow { name, .. } => format!("Camera: follow {name}"),
             Mode::Reset { .. } => "Camera: returning to fit".to_owned(),
         }
+    }
+}
+
+fn following(avatar: &Avatar) -> Mode {
+    Mode::Follow {
+        key: avatar.key.clone(),
+        name: avatar.name.clone(),
     }
 }
 
@@ -181,17 +194,22 @@ mod tests {
     };
 
     fn avatars() -> Simulation {
-        let events = ["Ada", "Grace"]
-            .map(|name| Event {
+        simulation(&[("Ada", ""), ("Grace", "")])
+    }
+
+    fn simulation(authors: &[(&str, &str)]) -> Simulation {
+        let events = authors
+            .iter()
+            .map(|(name, email)| Event {
                 author: timeline::Identity {
                     name: name.as_bytes().to_vec(),
-                    email: Vec::new(),
+                    email: email.as_bytes().to_vec(),
                 },
                 contributor: None,
                 seconds: 0,
                 changes: Vec::new(),
             })
-            .into();
+            .collect::<Vec<_>>();
         let mut simulation = Simulation::new(
             events,
             &Options::default(),
@@ -200,6 +218,23 @@ mod tests {
         );
         simulation.advance_to(2, 1);
         simulation
+    }
+
+    #[test]
+    fn cycle_distinguishes_contributors_sharing_a_name() {
+        let simulation =
+            simulation(&[("Sam", "a@example.invalid"), ("Sam", "b@example.invalid")]);
+        let avatars = simulation.avatars();
+        let view = (Vec3::ZERO, 10.0);
+        let mut camera = PreviewCamera::new(view);
+        let input = Input {
+            cycle: true,
+            ..Input::default()
+        };
+        for index in [0, 1, 0] {
+            camera.update(&input, view, avatars, 0.1);
+            assert_eq!(camera.mode, following(&avatars[index]));
+        }
     }
 
     #[test]
@@ -311,7 +346,7 @@ mod tests {
         assert_eq!(camera.mode, Mode::Fit);
         for index in [0, 1, 0] {
             camera.update(&input, view, avatars, 0.1);
-            assert_eq!(camera.mode, Mode::Follow(avatars[index].name.clone()));
+            assert_eq!(camera.mode, following(&avatars[index]));
         }
         assert!(camera.focus.y > 0.0);
         assert!(camera.focus.y < avatars[0].position.y);
@@ -346,7 +381,7 @@ mod tests {
             &avatars,
             0.1,
         );
-        let target = avatars[0].name.clone();
+        let target = following(&avatars[0]);
         avatars[0].position = Vec3::new(8.0, 4.0, -2.0);
         avatars.reverse();
         avatars[0].presence = 0.0;
@@ -361,7 +396,7 @@ mod tests {
             &avatars,
             0.3,
         );
-        assert_eq!(camera.mode, Mode::Follow(target.clone()));
+        assert_eq!(camera.mode, target);
         assert!(camera.focus.abs_diff_eq(
             start.lerp(avatars[1].position, 1.0 - (-1.0_f32).exp()),
             0.0001
@@ -375,7 +410,7 @@ mod tests {
             &avatars,
             0.1,
         );
-        assert_eq!(camera.mode, Mode::Follow(target));
+        assert_eq!(camera.mode, target);
         camera.update(
             &Input {
                 reset: true,
