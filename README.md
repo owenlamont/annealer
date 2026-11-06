@@ -1,18 +1,18 @@
-# Annealer
+# Codestrand
 
-![Annealer logo](assets/annealer.svg)
+![Codestrand logo](assets/codestrand.svg)
 
 A Git history visualiser exploring how software takes shape over time.
 
-Annealer aims to retain Gource's moving developers and growing directory graph,
-adding restrained 3D depth and animated diff fragments. The annealing metaphor is
-a structure gradually settling as changes reshape the repository.
+Codestrand aims to retain Gource's moving developers and growing directory graph,
+adding restrained 3D depth and animated diff fragments. A repository is a strand
+of changes, each commit woven into the structure the last ones left behind.
 
 **Status: layout study.** Playback lays out a local repository or a built-in synthetic
 history with persistent file positions, gliding contributors, coordinated commit
 beams, labels and diff fragments. Preview and numbered PNG export share one
 deterministic simulation. Built-in video encoding is not implemented. Licensed MIT OR
-Apache-2.0; Cargo publishing is disabled.
+Apache-2.0.
 
 ## Visual goal
 
@@ -56,7 +56,7 @@ cargo run --locked -- inspect /path/to/repository --revision HEAD
 Inspection reads complete local working or bare repositories without modifying them.
 The experimental JSON contains parent-before-child commits, raw identities and paths,
 and first-parent file changes.
-See [the Git import issue](https://github.com/owenlamont/annealer/issues/5)
+See [the Git import issue](https://github.com/owenlamont/codestrand/issues/5)
 for implementation decisions and validation results.
 
 Create a deterministic 100-commit test repository with
@@ -84,7 +84,7 @@ say otherwise. The output directory must not
 already exist. Commits touching more than 24 files aim beams at directories instead.
 
 Repository playback caches the latest first-parent timeline and diff counts as JSON
-under the platform user cache directory (`annealer/`), namespaced by a hash of the
+under the platform user cache directory (`codestrand/`), namespaced by a hash of the
 canonical common Git directory, shared by linked worktrees. A resolved commit ID and
 a format/import/timeline version
 identify the snapshot; a different tip replaces the snapshot after a full import.
@@ -100,26 +100,26 @@ Rendering changes also need the graphics export check and visual inspection:
 cargo test --locked --test render_export -- --ignored
 ```
 
-See [the video export issue](https://github.com/owenlamont/annealer/issues/9)
+See [the video export issue](https://github.com/owenlamont/codestrand/issues/9)
 for the verified 10-second MP4 proof and playback results.
 
 To reproduce the proof, install uv and FFmpeg/ffprobe with the libx264 encoder:
 
 ```sh
 cargo build --locked -j 2
-uv run --script scripts/video_proof.py target/debug/annealer video-proof
+uv run --script scripts/video_proof.py target/debug/codestrand video-proof
 ```
 
-On Windows, use `target/debug/annealer.exe`. The output directory must be new.
+On Windows, use `target/debug/codestrand.exe`. The output directory must be new.
 Run the script with `--help` for output retention and cleanup instructions.
 
 ## Contributor aliases
 
 Preview and export read `contributors.toml` from the user configuration directory:
 
-- Linux: `~/.config/annealer/` (or `$XDG_CONFIG_HOME/annealer/` when set).
-- macOS: `~/Library/Application Support/annealer/`.
-- Windows: `%APPDATA%\annealer\`.
+- Linux: `~/.config/codestrand/` (or `$XDG_CONFIG_HOME/codestrand/` when set).
+- macOS: `~/Library/Application Support/codestrand/`.
+- Windows: `%APPDATA%\codestrand\`.
 
 Override the file with `--contributors /path/to/contributors.toml`:
 

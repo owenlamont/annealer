@@ -231,7 +231,7 @@ pub(super) fn preview(simulation: Simulation, title: String) {
     app.insert_resource(camera)
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Annealer — layout study".to_owned(),
+                title: "Codestrand — layout study".to_owned(),
                 resolution: (WIDTH, HEIGHT).into(),
                 ..default()
             }),
@@ -329,7 +329,7 @@ fn setup(world: &mut World) {
         ));
     }
     let title = world.resource::<Title>().0.clone();
-    heading(world, camera, "ANNEALER", 28.0, 28.0, 30.0);
+    heading(world, camera, "CODESTRAND", 28.0, 28.0, 30.0);
     heading(world, camera, &title, 28.0, 68.0, 16.0);
     let caption = heading(world, camera, " ", 28.0, 668.0, 14.0);
     world.entity_mut(caption).insert(Caption);

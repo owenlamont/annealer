@@ -4,6 +4,7 @@
 # ///
 
 import os
+import shutil
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -52,8 +53,10 @@ def _merge(repository: Path) -> None:
 
 
 def _classify(*, repository: Path, event: str) -> subprocess.CompletedProcess[str]:
+    bash = shutil.which("bash")
+    assert bash is not None
     return subprocess.run(
-        ["bash", str(_SCRIPT)],
+        [bash, str(_SCRIPT)],
         cwd=repository,
         env=_ENVIRONMENT | {"GITHUB_EVENT_NAME": event},
         capture_output=True,
@@ -69,7 +72,7 @@ def _classify(*, repository: Path, event: str) -> subprocess.CompletedProcess[st
         pytest.param("AGENTS.md", "false", id="agent guidance"),
         pytest.param("docs/guide.md", "false", id="documentation"),
         pytest.param("docs/nested/guide.md", "false", id="nested documentation"),
-        pytest.param("assets/annealer.svg", "false", id="logo"),
+        pytest.param("assets/codestrand.svg", "false", id="logo"),
         pytest.param("src/main.rs", "true", id="rust"),
         pytest.param("Cargo.toml", "true", id="manifest"),
         pytest.param("Cargo.lock", "true", id="lockfile"),
@@ -81,7 +84,14 @@ def _classify(*, repository: Path, event: str) -> subprocess.CompletedProcess[st
         pytest.param(".github/workflows/ci.yml", "true", id="workflow"),
         pytest.param("tests/fixture.md", "true", id="markdown fixture"),
         pytest.param("assets/runtime.png", "true", id="unknown asset"),
-        pytest.param("new\nfile.rs", "true", id="newline in path"),
+        pytest.param(
+            "new\nfile.rs",
+            "true",
+            id="newline in path",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="Windows forbids newlines in filenames"
+            ),
+        ),
     ],
 )
 def test_pull_request_paths(repository: Path, path: str, expected: str) -> None:
