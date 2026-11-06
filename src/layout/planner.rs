@@ -9,6 +9,59 @@ const LOOK_AHEAD_COMMITS: usize = 128;
 const GAP: f32 = 0.3;
 pub(super) const RELEASE_RADIUS: f32 = 0.05;
 
+fn nearby_pairs(
+    positions: &[Vec2],
+    radii: &[f32],
+    live: &mut [usize],
+    mut visit: impl FnMut(usize, usize, Vec2, f32),
+) {
+    live.sort_by(|&a, &b| {
+        (positions[a].x - radii[a])
+            .total_cmp(&(positions[b].x - radii[b]))
+            .then(a.cmp(&b))
+    });
+    if live.len() <= 32 {
+        for (offset, &a) in live.iter().enumerate() {
+            for &b in &live[offset + 1..] {
+                if positions[b].x - radii[b] > positions[a].x + radii[a] + GAP {
+                    break;
+                }
+                visit(a, b, positions[b] - positions[a], radii[a] + radii[b] + GAP);
+            }
+        }
+        return;
+    }
+    let width = live.iter().map(|&index| radii[index]).fold(0.0, f32::max) * 2.0 + GAP;
+    let mut cells: HashMap<_, Vec<_>> = HashMap::new();
+    for (rank, &index) in live.iter().enumerate() {
+        cells
+            .entry((positions[index] / width).floor().as_ivec2())
+            .or_default()
+            .push((rank, index, positions[index], radii[index]));
+    }
+    for (rank, &a) in live.iter().enumerate() {
+        let cell = (positions[a] / width).floor().as_ivec2();
+        for offset in
+            (-1..=1).flat_map(|y| (-1..=1).map(move |x| bevy::math::IVec2::new(x, y)))
+        {
+            let Some(neighbors) = cells.get(&(cell + offset)) else {
+                continue;
+            };
+            let first = neighbors.partition_point(|&(other, ..)| other <= rank);
+            for &(.., b, position, radius) in &neighbors[first..] {
+                if position.x - radius > positions[a].x + radii[a] + GAP {
+                    break;
+                }
+                let delta = position - positions[a];
+                let reach = radii[a] + radius + GAP;
+                if delta.y.abs() <= reach {
+                    visit(a, b, delta, reach);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct Plan {
     occupancy: Arc<[Vec<(usize, usize)>]>,
@@ -126,30 +179,26 @@ impl Layout {
         radii: &[f32],
         live: &mut [usize],
     ) {
-        live.sort_by(|&a, &b| {
-            (positions[a].x - radii[a])
-                .total_cmp(&(positions[b].x - radii[b]))
-                .then(a.cmp(&b))
-        });
         let mut correction = vec![Vec2::ZERO; self.dirs.len()];
-        for (offset, &a) in live.iter().enumerate() {
-            for &b in &live[offset + 1..] {
-                if positions[b].x - radii[b] > positions[a].x + radii[a] + GAP {
-                    break;
-                }
-                let delta = positions[b] - positions[a];
-                let reach = radii[a] + radii[b] + GAP;
-                let distance = delta.length();
-                if distance >= reach {
-                    continue;
-                }
-                let unit = delta
-                    .normalize_or(Vec2::from_angle(hash_angle(&self.dirs[b].path)));
-                let push = unit * (reach - distance) * 0.5;
-                correction[a] -= push * if b == 0 { 2.0 } else { 1.0 };
-                correction[b] += push * if a == 0 { 2.0 } else { 1.0 };
-            }
+        let mut directions = vec![Vec2::ZERO; self.dirs.len()];
+        for &index in live.iter() {
+            directions[index] = Vec2::from_angle(hash_angle(&self.dirs[index].path));
         }
+        nearby_pairs(positions, radii, live, |a, b, delta, reach| {
+            let distance = delta.length();
+            if distance >= reach {
+                return;
+            }
+            let inverse = distance.recip();
+            let unit = if inverse.is_finite() && inverse > 0.0 {
+                delta * inverse
+            } else {
+                directions[b]
+            };
+            let push = unit * (reach - distance) * 0.5;
+            correction[a] -= push * if b == 0 { 2.0 } else { 1.0 };
+            correction[b] += push * if a == 0 { 2.0 } else { 1.0 };
+        });
         for &index in live.iter() {
             if index != 0 {
                 positions[index] += correction[index] * 0.8;
@@ -181,6 +230,150 @@ mod tests {
     use crate::timeline::FileChange;
 
     const DT: f32 = 1.0 / 60.0;
+
+    #[test]
+    fn grid_matches_brute_force_separation_and_ignores_input_order() {
+        let mut layout = Layout::empty();
+        for index in 1..96 {
+            layout.ensure_dir(&format!("dir-{index}"));
+        }
+        let positions: Vec<_> = (0_i16..96)
+            .map(|index| {
+                Vec2::new(f32::from(index % 12 - 6), f32::from(index / 12 - 4)) * 2.34
+            })
+            .collect();
+        let radii: Vec<_> = (0..96)
+            .map(|index| [0.0, 0.4, 1.02, 4.0][index % 4])
+            .collect();
+        let mut live: Vec<_> = (0..96).filter(|index| index % 7 != 6).collect();
+        let mut original = positions;
+        original[0] = Vec2::ZERO;
+        original[1] = Vec2::ZERO;
+        original[2] = Vec2::new(0.0, radii[0] + radii[2] + GAP);
+        let mut expected = original.clone();
+        let mut actual = original.clone();
+        let mut reversed = original.clone();
+        for _ in 0..3 {
+            live.sort_by(|&a, &b| {
+                (expected[a].x - radii[a])
+                    .total_cmp(&(expected[b].x - radii[b]))
+                    .then(a.cmp(&b))
+            });
+            let mut pairs = Vec::new();
+            let mut correction = vec![Vec2::ZERO; expected.len()];
+            for (a, b) in live.iter().enumerate().flat_map(|(offset, &a)| {
+                live[offset + 1..].iter().map(move |&b| (a, b))
+            }) {
+                let delta = expected[b] - expected[a];
+                let reach = radii[a] + radii[b] + GAP;
+                let distance = delta.length();
+                if distance >= reach {
+                    continue;
+                }
+                pairs.push((a, b));
+                let unit = delta
+                    .normalize_or(Vec2::from_angle(hash_angle(&layout.dirs[b].path)));
+                let push = unit * (reach - distance) * 0.5;
+                correction[a] -= push * if b == 0 { 2.0 } else { 1.0 };
+                correction[b] += push * if a == 0 { 2.0 } else { 1.0 };
+            }
+            let mut found = Vec::new();
+            live.reverse();
+            nearby_pairs(&expected, &radii, &mut live, |a, b, _, _| {
+                if expected[a].distance(expected[b]) < radii[a] + radii[b] + GAP {
+                    found.push((a, b));
+                }
+            });
+            assert_ne!(pairs, []);
+            found.sort_unstable();
+            pairs.sort_unstable();
+            assert_eq!(found, pairs);
+            for &index in live.iter().filter(|&&index| index != 0) {
+                expected[index] += correction[index] * 0.8;
+            }
+            live.reverse();
+            layout.separate_discs(&mut actual, &radii, &mut live);
+            live.reverse();
+            layout.separate_discs(&mut reversed, &radii, &mut live);
+            assert_eq!(actual, reversed);
+            for (actual, expected) in actual.iter().zip(&expected) {
+                assert!(actual.distance(*expected) < 0.000_02);
+            }
+            assert_eq!(actual[0], original[0]);
+        }
+    }
+
+    #[test]
+    #[ignore = "release-mode layout measurement"]
+    fn layout_step_cost() {
+        use std::{hint::black_box, time::Instant};
+
+        for (children, warm_up) in [(12, 10), (3_000, 10), (3_000, 120)] {
+            let mut history = event(&[]);
+            history.changes = (0..children)
+                .map(|index| FileChange {
+                    path: format!("child-{index}/file"),
+                    kind: Kind::Added,
+                    insertions: 1,
+                    removals: 0,
+                })
+                .collect();
+            let mut layout = Layout::planned(std::slice::from_ref(&history));
+            layout.begin_commit();
+            for change in &history.changes {
+                layout.add(&change.path, 0.0, 0);
+            }
+            for _ in 0..warm_up {
+                layout.step(DT);
+            }
+            let positions: Vec<_> =
+                layout.dirs.iter().map(|dir| dir.position).collect();
+            let radii: Vec<_> = layout.dirs.iter().map(|dir| dir.reserve).collect();
+            let mut live: Vec<_> = layout.dirs().map(|(index, _)| index).collect();
+            let mut candidates = 0;
+            let mut overlaps = 0;
+            nearby_pairs(&positions, &radii, &mut live, |a, b, _, _| {
+                candidates += 1;
+                overlaps += usize::from(
+                    positions[a].distance(positions[b]) < radii[a] + radii[b] + GAP,
+                );
+            });
+            println!("candidates={candidates}, overlaps={overlaps}");
+            let mut step = std::time::Duration::ZERO;
+            let mut relax = std::time::Duration::ZERO;
+            let mut separation = std::time::Duration::ZERO;
+            for _ in 0..100 {
+                let mut sample = layout.clone();
+                let start = Instant::now();
+                sample.step(black_box(DT));
+                step += start.elapsed();
+                black_box(sample);
+
+                let mut sample = layout.clone();
+                let start = Instant::now();
+                sample.relax(black_box(DT));
+                relax += start.elapsed();
+                black_box(sample);
+
+                let mut positions: Vec<_> =
+                    layout.dirs.iter().map(|dir| dir.position).collect();
+                let radii: Vec<_> = layout.dirs.iter().map(|dir| dir.reserve).collect();
+                let mut live: Vec<_> = layout.dirs().map(|(index, _)| index).collect();
+                let start = Instant::now();
+                for _ in 0..3 {
+                    layout.separate_discs(&mut positions, &radii, &mut live);
+                }
+                separation += start.elapsed();
+                black_box(positions);
+            }
+            println!(
+                "children={children}, warm_up={warm_up}: step={:.3} ms relax={:.3} ms separation_3x={:.3} ms (100 snapshot samples)",
+                step.as_secs_f64() * 10.0,
+                relax.as_secs_f64() * 10.0,
+                separation.as_secs_f64() * 10.0,
+            );
+        }
+    }
 
     fn event(changes: &[(&str, Kind)]) -> Event {
         Event {
