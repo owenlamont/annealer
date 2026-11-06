@@ -55,7 +55,7 @@ struct Entry {
 
 pub(super) fn load(explicit: Option<&Path>) -> Result<Mappings, Error> {
     let default =
-        dirs::config_dir().map(|root| root.join("annealer/contributors.toml"));
+        dirs::config_dir().map(|root| root.join("codestrand/contributors.toml"));
     load_path(explicit.or(default.as_deref()), explicit.is_some())
 }
 

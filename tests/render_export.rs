@@ -55,7 +55,7 @@ fn export_is_complete_and_independent_of_render_pacing() {
 fn export(directory: &Path, delay: &str) {
     let log_path = directory.with_extension("log");
     let log = fs::File::create(&log_path).expect("capture log can be created");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_annealer"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_codestrand"))
         .arg("export")
         .arg(directory)
         .args(["--frames", "8", "--fps", "2", "--frame-delay-ms", delay])
