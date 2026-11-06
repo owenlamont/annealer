@@ -60,6 +60,7 @@ struct Pulse {
 
 #[derive(Clone, Debug)]
 pub(super) struct Avatar {
+    pub key: Key,
     pub name: String,
     pub position: Vec3,
     velocity: Vec3,
@@ -389,6 +390,7 @@ impl State {
         }
         let index = self.avatars.len();
         self.avatars.push(Avatar {
+            key: contributor.key.clone(),
             name: contributor.name.clone(),
             position: self.focus() + Vec3::Y * MIN_AVATAR_HEIGHT,
             velocity: Vec3::ZERO,

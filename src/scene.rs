@@ -4,6 +4,7 @@ use bevy::{
     asset::RenderAssetUsages,
     camera::RenderTarget,
     image::ImageSampler,
+    input::mouse::{AccumulatedMouseScroll, MouseScrollUnit},
     prelude::*,
     render::{
         RenderPlugin,
@@ -17,6 +18,7 @@ use bevy::{
 };
 
 use crate::{
+    camera::{Input, PreviewCamera},
     layout::Layout,
     model::{self, Simulation},
     theme::Theme,
@@ -224,21 +226,24 @@ fn app(simulation: Simulation, title: String) -> App {
 struct Title(String);
 
 pub(super) fn preview(simulation: Simulation, title: String) {
+    let camera = PreviewCamera::new(simulation.view());
     let mut app = app(simulation, title);
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            title: "Annealer — layout study".to_owned(),
-            resolution: (WIDTH, HEIGHT).into(),
+    app.insert_resource(camera)
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "Annealer — layout study".to_owned(),
+                resolution: (WIDTH, HEIGHT).into(),
+                ..default()
+            }),
             ..default()
-        }),
-        ..default()
-    }))
-    .insert_resource(SceneTarget(RenderTarget::default()))
-    .insert_resource(Frame {
-        index: 0,
-        fps: model::PREVIEW_FPS,
-    })
-    .add_systems(Update, preview_clock.before(animate));
+        }))
+        .insert_resource(SceneTarget(RenderTarget::default()))
+        .insert_resource(Frame {
+            index: 0,
+            fps: model::PREVIEW_FPS,
+        })
+        .add_systems(Update, preview_clock.before(animate))
+        .add_systems(Update, preview_camera.after(animate));
     app.run();
 }
 
@@ -366,6 +371,54 @@ fn preview_clock(world: &mut World) {
     {
         world.write_message(AppExit::Success);
     }
+}
+
+fn preview_camera(world: &mut World, mut drag_from: Local<Option<Vec2>>) {
+    let mut windows = world.query::<&Window>();
+    let cursor = windows
+        .iter(world)
+        .find(|window| window.focused)
+        .map(Window::cursor_position);
+    let previous = drag_from.take();
+    let mut input = Input::default();
+    if let Some(cursor) = cursor {
+        let keys = world.resource::<ButtonInput<KeyCode>>();
+        let axis = |positive, negative| {
+            f32::from(u8::from(keys.pressed(positive)))
+                - f32::from(u8::from(keys.pressed(negative)))
+        };
+        input.pan = Vec2::new(
+            axis(KeyCode::KeyD, KeyCode::KeyA),
+            axis(KeyCode::KeyW, KeyCode::KeyS),
+        )
+        .normalize_or_zero();
+        input.cycle = keys.just_pressed(KeyCode::Tab);
+        input.reset = keys.just_pressed(KeyCode::Space);
+        let dragging = world
+            .resource::<ButtonInput<MouseButton>>()
+            .pressed(MouseButton::Right);
+        // WSLg reports raw device motion as absolute positions, so orbit follows the cursor.
+        if let (true, Some(from), Some(to)) = (dragging, previous, cursor) {
+            input.orbit = to - from;
+        }
+        *drag_from = cursor.filter(|_| dragging);
+        let scroll = world.resource::<AccumulatedMouseScroll>();
+        input.zoom = scroll.delta.y
+            * match scroll.unit {
+                MouseScrollUnit::Line => 1.0,
+                MouseScrollUnit::Pixel => 0.01,
+            };
+    }
+    let dt = world.resource::<Time<Real>>().delta_secs();
+    world.resource_scope(|world, mut camera: Mut<PreviewCamera>| {
+        let simulation = &world.resource::<Playback>().0;
+        camera.update(&input, simulation.view(), simulation.avatars(), dt);
+        let (eye, focus) = camera.pose();
+        let mut query = world.query_filtered::<&mut Transform, With<SceneCamera>>();
+        if let Ok(mut transform) = query.single_mut(world) {
+            *transform = Transform::from_translation(eye).looking_at(focus, Vec3::Y);
+        }
+    });
 }
 
 fn animate(world: &mut World) {
@@ -894,7 +947,11 @@ fn labels(world: &mut World) {
     };
     let (camera, transform) = (camera.clone(), *transform);
     let playback = world.resource::<Playback>();
-    let caption = playback.0.caption();
+    let mut caption = playback.0.caption();
+    if let Some(camera) = world.get_resource::<PreviewCamera>() {
+        caption.push_str("  |  ");
+        caption.push_str(&camera.caption());
+    }
     let mut wanted = playback.0.labels();
     wanted.sort_by_key(|label| label.kind);
     let mut placed: Vec<Rect> = Vec::new();
