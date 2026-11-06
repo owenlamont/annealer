@@ -9,6 +9,7 @@ readme = "README.md"
 repository = "https://github.com/owenlamont/annealer"
 categories = ["visualization", "development-tools"]
 keywords = ["git", "visualization", "history", "animation"]
+license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
