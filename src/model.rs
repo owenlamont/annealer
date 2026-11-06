@@ -12,6 +12,9 @@ use crate::{
     timeline::{Event, Kind},
 };
 
+#[cfg(test)]
+mod measurement;
+
 pub(super) const TICK_RATE: u32 = 60;
 pub(super) const PREVIEW_FPS: u16 = 30;
 const LEAD_IN: f32 = 0.5;
@@ -134,7 +137,7 @@ impl Simulation {
             .map_or(events.len(), |count| (start + count).min(events.len()));
         let mut state = State {
             tick: 0,
-            layout: Layout::default(),
+            layout: Layout::planned(&events),
             avatars: Vec::new(),
             authors: HashMap::new(),
             next_event: 0,
@@ -144,6 +147,7 @@ impl Simulation {
             geometry: theme.geometry(),
         };
         for event in &events[..start] {
+            state.layout.begin_commit();
             let author = state.author(
                 event
                     .contributor
@@ -403,6 +407,7 @@ impl State {
     }
 
     fn begin(&mut self, event: &Event, start: f32) {
+        self.layout.begin_commit();
         let author = self.author(
             event
                 .contributor
@@ -954,7 +959,21 @@ mod tests {
 
     #[test]
     fn projection_check_rejects_fixed_height() {
-        let mut sim = simulation();
+        let mut events = timeline::synthetic();
+        events[7]
+            .changes
+            .extend((0..256).map(|index| timeline::FileChange {
+                path: format!("tests/fixtures/clearance_{index}.yaml"),
+                kind: Kind::Added,
+                insertions: 1,
+                removals: 0,
+            }));
+        let mut sim = Simulation::new(
+            events,
+            &Options::default(),
+            &Theme::neon(),
+            &crate::contributors::Mappings::default(),
+        );
         sim.advance_to(13, 2);
         assert_clearance(&sim);
         let state = &sim.state;
@@ -1009,21 +1028,44 @@ mod tests {
 
     #[test]
     fn playback_is_independent_of_frame_rate_and_replay() {
-        let mut thirty = simulation();
-        let mut sixty = simulation();
-        thirty.advance_to(90, 30);
-        sixty.advance_to(180, 60);
-        let positions = |sim: &Simulation| -> Vec<_> {
-            sim.layout()
-                .files()
-                .map(|(id, file)| (id, file.position))
-                .collect()
-        };
-        assert_eq!(positions(&thirty), positions(&sixty));
-        let reference = positions(&thirty);
-        thirty.advance_to(200, 30);
-        thirty.advance_to(90, 30);
-        assert_eq!(positions(&thirty), reference);
+        for start in [0, 8] {
+            let events = timeline::synthetic();
+            let options = Options {
+                start,
+                ..Options::default()
+            };
+            let mut thirty = Simulation::new(
+                events.clone(),
+                &options,
+                &Theme::neon(),
+                &crate::contributors::Mappings::default(),
+            );
+            let mut sixty = Simulation::new(
+                events.clone(),
+                &options,
+                &Theme::neon(),
+                &crate::contributors::Mappings::default(),
+            );
+            thirty.advance_to(90, 30);
+            sixty.advance_to(180, 60);
+            let positions = |sim: &Simulation| {
+                (
+                    sim.layout()
+                        .files()
+                        .map(|(id, file)| (id, file.position))
+                        .collect::<Vec<_>>(),
+                    sim.layout()
+                        .dirs()
+                        .map(|(index, dir)| (index, dir.position))
+                        .collect::<Vec<_>>(),
+                )
+            };
+            assert_eq!(positions(&thirty), positions(&sixty));
+            let reference = positions(&thirty);
+            thirty.advance_to(200, 30);
+            thirty.advance_to(90, 30);
+            assert_eq!(positions(&thirty), reference);
+        }
     }
 
     #[test]
