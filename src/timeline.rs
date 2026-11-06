@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Write};
 use crate::history::{BlobDiff, ChangeKind, Commit, History};
 
 // Bump when the snapshot format, history import policies or timeline conversion change.
-pub(super) const CACHE_VERSION: u32 = 1;
+pub(super) const CACHE_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) enum Kind {
@@ -22,8 +22,16 @@ pub(super) struct FileChange {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(super) struct Identity {
+    pub name: Vec<u8>,
+    pub email: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Event {
-    pub author: String,
+    pub author: Identity,
+    #[serde(skip)]
+    pub contributor: Option<crate::contributors::Contributor>,
     pub seconds: i64,
     pub changes: Vec<FileChange>,
 }
@@ -50,7 +58,11 @@ pub(super) fn from_history(history: &History) -> Vec<Event> {
         .rev()
         .filter(|commit| !commit.changes.is_empty())
         .map(|commit| Event {
-            author: String::from_utf8_lossy(&commit.author.name).into_owned(),
+            author: Identity {
+                name: commit.author.name.clone(),
+                email: commit.author.email.clone(),
+            },
+            contributor: None,
             seconds: commit.author.seconds,
             changes: commit
                 .changes
@@ -110,16 +122,18 @@ pub(super) fn synthetic() -> Vec<Event> {
     let mut events = Vec::new();
     let mut push = |author: &str, changes: Vec<FileChange>| {
         let seconds = 1_700_000_000 + 86_400 * i64::try_from(events.len()).unwrap_or(0);
+        let name = author.as_bytes().to_vec();
+        let email = format!("{author}@example.invalid").into_bytes();
         events.push(Event {
-            author: author.to_owned(),
+            author: Identity { name, email },
+            contributor: None,
             seconds,
             changes,
         });
     };
     let add = |path: &str, lines| change(path, Kind::Added, lines, 0);
-    let edit = |path: &str, insertions, removals| {
-        change(path, Kind::Modified, insertions, removals)
-    };
+    let edit =
+        |path: &str, added, removed| change(path, Kind::Modified, added, removed);
     push(
         "Ada",
         vec![

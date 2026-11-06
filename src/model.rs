@@ -6,6 +6,7 @@ use std::{
 use bevy::math::{Vec2, Vec3};
 
 use crate::{
+    contributors::{Contributor, Key, Mappings},
     layout::Layout,
     theme::{Geometry, Theme},
     timeline::{Event, Kind},
@@ -102,7 +103,7 @@ struct State {
     tick: u64,
     layout: Layout,
     avatars: Vec<Avatar>,
-    authors: HashMap<String, usize>,
+    authors: HashMap<Key, usize>,
     next_event: usize,
     pulses: VecDeque<Pulse>,
     focus: Vec3,
@@ -122,14 +123,20 @@ pub(super) struct Simulation {
 }
 
 impl Simulation {
-    pub(super) fn new(events: &[Event], options: &Options, theme: &Theme) -> Self {
+    pub(super) fn new(
+        mut events: Vec<Event>,
+        options: &Options,
+        theme: &Theme,
+        mappings: &Mappings,
+    ) -> Self {
+        mappings.apply(&mut events);
         let start = options.start.min(events.len());
         let end = options
             .commits
             .map_or(events.len(), |count| (start + count).min(events.len()));
         let mut state = State {
             tick: 0,
-            layout: Layout::planned(events),
+            layout: Layout::planned(&events),
             avatars: Vec::new(),
             authors: HashMap::new(),
             next_event: 0,
@@ -140,7 +147,13 @@ impl Simulation {
         };
         for event in &events[..start] {
             state.layout.begin_commit();
-            let author = state.author(&event.author, 0.0);
+            let author = state.author(
+                event
+                    .contributor
+                    .as_ref()
+                    .expect("contributors are resolved"),
+                0.0,
+            );
             for change in &event.changes {
                 apply(&mut state.layout, change, author);
             }
@@ -151,10 +164,13 @@ impl Simulation {
             state.authors.clear();
         }
         (state.focus, state.distance) = state.fit();
+        let total = events.len();
+        events.truncate(end);
+        events.drain(..start);
         Self {
-            events: events[start..end].to_vec(),
+            events,
             offset: start,
-            total: events.len(),
+            total,
             commit_seconds: options.commit_seconds,
             initial: state.clone(),
             state,
@@ -250,7 +266,11 @@ impl Simulation {
         format!(
             "{}   |   {}   |   commit {} / {}",
             date(event.seconds),
-            event.author,
+            event
+                .contributor
+                .as_ref()
+                .expect("contributors are resolved")
+                .name,
             self.commit(),
             self.total
         )
@@ -367,26 +387,32 @@ impl Simulation {
 }
 
 impl State {
-    fn author(&mut self, name: &str, now: f32) -> usize {
-        if let Some(&index) = self.authors.get(name) {
+    fn author(&mut self, contributor: &Contributor, now: f32) -> usize {
+        if let Some(&index) = self.authors.get(&contributor.key) {
             return index;
         }
         let index = self.avatars.len();
         self.avatars.push(Avatar {
-            name: name.to_owned(),
+            name: contributor.name.clone(),
             position: self.focus() + Vec3::Y * MIN_AVATAR_HEIGHT,
             velocity: Vec3::ZERO,
             target: self.focus(),
             last_active: now,
             presence: 0.0,
         });
-        self.authors.insert(name.to_owned(), index);
+        self.authors.insert(contributor.key.clone(), index);
         index
     }
 
     fn begin(&mut self, event: &Event, start: f32) {
         self.layout.begin_commit();
-        let author = self.author(&event.author, start);
+        let author = self.author(
+            event
+                .contributor
+                .as_ref()
+                .expect("contributors are resolved"),
+            start,
+        );
         let mut touched = BTreeMap::new();
         for change in &event.changes {
             let id = apply(&mut self.layout, change, author);
@@ -816,7 +842,51 @@ mod tests {
     use crate::timeline;
 
     fn simulation() -> Simulation {
-        Simulation::new(&timeline::synthetic(), &Options::default(), &Theme::neon())
+        Simulation::new(
+            timeline::synthetic(),
+            &Options::default(),
+            &Theme::neon(),
+            &crate::contributors::Mappings::default(),
+        )
+    }
+
+    #[test]
+    fn construction_preserves_event_buffers_when_selecting_a_range() {
+        let events: Vec<_> = ["First", "Second"]
+            .into_iter()
+            .map(|name| Event {
+                author: timeline::Identity {
+                    name: name.as_bytes().to_vec(),
+                    email: name.as_bytes().to_vec(),
+                },
+                contributor: None,
+                seconds: 0,
+                changes: vec![timeline::FileChange {
+                    path: name.to_owned(),
+                    kind: Kind::Added,
+                    insertions: 1,
+                    removals: 0,
+                }],
+            })
+            .collect();
+        let total = events.len();
+        let changes = events[1].changes.as_ptr();
+        let author = events[1].author.name.as_ptr();
+        let sim = Simulation::new(
+            events,
+            &Options {
+                start: 1,
+                commits: Some(1),
+                ..Options::default()
+            },
+            &Theme::neon(),
+            &Mappings::default(),
+        );
+        assert_eq!(sim.total(), total);
+        assert_eq!(sim.commit(), 1);
+        assert_eq!(sim.events.len(), 1);
+        assert_eq!(sim.events[0].changes.as_ptr(), changes);
+        assert_eq!(sim.events[0].author.name.as_ptr(), author);
     }
 
     fn assert_clearance(sim: &Simulation) {
@@ -868,12 +938,13 @@ mod tests {
     fn synthetic_avatars_clear_file_tops_during_growth_and_rewind() {
         for start in [0, 8] {
             let mut sim = Simulation::new(
-                &timeline::synthetic(),
+                timeline::synthetic(),
                 &Options {
                     start,
                     ..Options::default()
                 },
                 &Theme::neon(),
+                &crate::contributors::Mappings::default(),
             );
             for _ in 0..2 {
                 for frame in 0..frames_for(sim.duration(), 60) {
@@ -895,7 +966,12 @@ mod tests {
                 insertions: 1,
                 removals: 0,
             }));
-        let mut sim = Simulation::new(&events, &Options::default(), &Theme::neon());
+        let mut sim = Simulation::new(
+            events,
+            &Options::default(),
+            &Theme::neon(),
+            &crate::contributors::Mappings::default(),
+        );
         sim.advance_to(13, 2);
         assert_clearance(&sim);
         let state = &sim.state;
@@ -936,8 +1012,12 @@ mod tests {
         theme.file_glyph_transform.scale *= 2.0;
         theme.avatar_radius = 0.5;
         theme.label_height = 28.0;
-        let mut sim =
-            Simulation::new(&timeline::synthetic(), &Options::default(), &theme);
+        let mut sim = Simulation::new(
+            timeline::synthetic(),
+            &Options::default(),
+            &theme,
+            &crate::contributors::Mappings::default(),
+        );
         for frame in 0..frames_for(sim.duration(), 30) {
             sim.advance_to(frame, 30);
             assert_clearance(&sim);
@@ -952,8 +1032,18 @@ mod tests {
                 start,
                 ..Options::default()
             };
-            let mut thirty = Simulation::new(&events, &options, &Theme::neon());
-            let mut sixty = Simulation::new(&events, &options, &Theme::neon());
+            let mut thirty = Simulation::new(
+                events.clone(),
+                &options,
+                &Theme::neon(),
+                &crate::contributors::Mappings::default(),
+            );
+            let mut sixty = Simulation::new(
+                events.clone(),
+                &options,
+                &Theme::neon(),
+                &crate::contributors::Mappings::default(),
+            );
             thirty.advance_to(90, 30);
             sixty.advance_to(180, 60);
             let positions = |sim: &Simulation| {
@@ -1015,7 +1105,12 @@ mod tests {
             commits: Some(2),
             ..Options::default()
         };
-        let sim = Simulation::new(&timeline::synthetic(), &options, &Theme::neon());
+        let sim = Simulation::new(
+            timeline::synthetic(),
+            &options,
+            &Theme::neon(),
+            &crate::contributors::Mappings::default(),
+        );
         assert_eq!(sim.commit(), 8);
         assert!(sim.layout().present_files() > 60);
         assert!(sim.layout().files().all(|(_, file)| file.presence >= 1.0));

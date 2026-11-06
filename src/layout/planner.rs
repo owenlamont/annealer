@@ -184,7 +184,11 @@ mod tests {
 
     fn event(changes: &[(&str, Kind)]) -> Event {
         Event {
-            author: "Author".to_owned(),
+            author: crate::timeline::Identity {
+                name: b"Author".to_vec(),
+                email: Vec::new(),
+            },
+            contributor: None,
             seconds: 0,
             changes: changes
                 .iter()
