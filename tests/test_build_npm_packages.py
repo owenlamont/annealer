@@ -16,7 +16,12 @@ import pytest
 
 _ROOT: Final = Path(__file__).resolve().parents[1]
 _PLATFORMS: Final = json.loads((_ROOT / "npm-platforms.json").read_text())["platforms"]
-_LICENSES: Final = ("LICENSE", "LICENSE-APACHE", "assets/material/LICENSE.txt")
+_LICENSES: Final = (
+    "LICENSE",
+    "LICENSE-APACHE",
+    "assets/material/LICENSE.txt",
+    "THIRDPARTY.txt",
+)
 
 
 @pytest.fixture

@@ -1,0 +1,15 @@
+Codestrand third-party notices
+Generated from Cargo.lock with cargo-about 0.9.3; includes all target platforms.
+
+{{#each licenses}}
+================================================================================
+{{name}} ({{id}})
+Used by:
+{{#each used_by}}
+  {{crate.name}} {{crate.version}}
+  Source: https://crates.io/api/v1/crates/{{crate.name}}/{{crate.version}}/download
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

@@ -9,7 +9,7 @@ description = "A Git history visualiser with restrained 3D depth and animated di
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
-license-files = ["LICENSE", "LICENSE-APACHE", "assets/material/LICENSE.txt"]
+license-files = ["LICENSE", "LICENSE-APACHE", "assets/material/LICENSE.txt", "THIRDPARTY.txt"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Environment :: Console",

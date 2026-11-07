@@ -149,6 +149,12 @@ authors and repository history remain unchanged.
 
 Rust 1.99.1, rustfmt and Clippy are pinned in `rust-toolchain.toml`.
 Install [prek](https://prek.j178.dev/) to run the checks shared with CI.
+Install [pixi](https://pixi.sh/) for the pinned cargo-about licence check.
+After changing dependencies, regenerate [third-party notices](THIRDPARTY.txt):
+
+```sh
+uv run --script scripts/licenses.py
+```
 
 ```sh
 prek install --install-hooks --overwrite
