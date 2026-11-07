@@ -377,12 +377,15 @@ fn preview_clock(world: &mut World, mut elapsed: Local<std::time::Duration>) {
     let duration = world.resource::<Playback>().0.duration();
     let fps = world.resource::<Frame>().fps;
     let frames = model::frames_for(duration, fps).unwrap_or(u32::MAX);
-    let frame = model::preview_frame(*elapsed, fps);
-    if frame >= frames {
-        *elapsed = std::time::Duration::ZERO;
+    let period_nanos = (u128::from(frames) * 1_000_000_000).div_ceil(u128::from(fps));
+    if elapsed.as_nanos() >= period_nanos {
+        *elapsed = std::time::Duration::from_nanos(
+            u64::try_from(elapsed.as_nanos() % period_nanos)
+                .expect("loop period fits in u64 nanoseconds"),
+        );
         world.resource_mut::<Playback>().0.restart();
     }
-    world.resource_mut::<Frame>().index = if frame >= frames { 0 } else { frame };
+    world.resource_mut::<Frame>().index = model::preview_frame(*elapsed, fps);
     if world
         .resource::<ButtonInput<KeyCode>>()
         .just_pressed(KeyCode::Escape)
@@ -1068,6 +1071,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn preview_loop_preserves_overshoot_across_multiple_cycles() {
+        let mut simulation = Simulation::new(
+            crate::timeline::synthetic().into_iter().take(1).collect(),
+            &model::Options::default(),
+            &Theme::neon(),
+            &crate::contributors::Mappings::default(),
+        );
+        assert_eq!(simulation.duration(), 3.0);
+        simulation.change_rate(8.0);
+        let mut app = App::new();
+        app.insert_resource(Playback(simulation))
+            .insert_resource(Frame { index: 0, fps: 30 })
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Time<Real>>()
+            .add_systems(Update, preview_clock);
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .update_with_duration(std::time::Duration::ZERO);
+        let mut total = std::time::Duration::ZERO;
+        let deltas = [
+            400_000_000,
+            1_250_000_000,
+            225_000_000,
+            1_000_000,
+            4_000_000,
+        ]
+        .into_iter()
+        .chain(std::iter::repeat_n(33_333_333, 200));
+        for nanos in deltas {
+            let delta = std::time::Duration::from_nanos(nanos);
+            total += delta.mul_f32(8.0);
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .update_with_duration(delta);
+            app.update();
+            let remainder = std::time::Duration::from_nanos(
+                u64::try_from(total.as_nanos() % 3_000_000_000).unwrap(),
+            );
+            let expected = model::preview_frame(remainder, 30);
+            let world = app.world_mut();
+            let frame = world.resource::<Frame>().index;
+            assert_eq!(frame, expected, "total timeline time: {total:?}");
+            world.resource_mut::<Playback>().0.advance_to(frame, 30);
+            assert_eq!(
+                world.resource::<Playback>().0.seconds(),
+                model::tick_time(u64::from(expected) * 2),
+            );
+        }
+    }
+
+    #[test]
     fn preview_keys_change_rate_without_seeking_and_loop_at_the_new_rate() {
         let simulation = Simulation::new(
             crate::timeline::synthetic(),
@@ -1124,7 +1178,7 @@ mod tests {
             .resource_mut::<Time<Real>>()
             .update_with_duration(std::time::Duration::from_secs(30));
         app.update();
-        assert_eq!(app.world().resource::<Frame>().index, 0);
+        assert_eq!(app.world().resource::<Frame>().index, 87);
         assert_eq!(app.world().resource::<Playback>().0.commit(), 0);
         assert_eq!(
             app.world().resource::<Playback>().0.scheduled_starts(),
