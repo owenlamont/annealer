@@ -88,6 +88,12 @@ impl Http {
         Self {
             client: ureq::Agent::config_builder()
                 .https_only(true)
+                .tls_config(
+                    ureq::tls::TlsConfig::builder()
+                        .provider(ureq::tls::TlsProvider::NativeTls)
+                        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                        .build(),
+                )
                 .http_status_as_error(false)
                 .timeout_connect(Some(Duration::from_secs(2)))
                 .timeout_resolve(Some(Duration::from_secs(2)))
@@ -508,7 +514,7 @@ impl<N: Network> Resolver<N> {
         let mut image = None;
         if let Some(login) = &login {
             let url = github_image(login, email, github.is_some(), avatar_url);
-            image = self.image(&url, &mut complete);
+            image = self.image(&url, &mut complete, stale.is_some());
         }
         let email = gravatar.unwrap_or(email).trim().to_ascii_lowercase();
         if image.is_none() && !email.is_empty() {
@@ -518,6 +524,7 @@ impl<N: Network> Resolver<N> {
                     hash(email)
                 ),
                 &mut complete,
+                stale.is_some(),
             );
         }
         let portrait = image.as_deref().and_then(Portrait::decode).map(Arc::new);
@@ -580,14 +587,25 @@ impl<N: Network> Resolver<N> {
             }
         }
     }
-    fn image(&mut self, url: &str, complete: &mut bool) -> Option<Vec<u8>> {
+    fn image(
+        &mut self,
+        url: &str,
+        complete: &mut bool,
+        has_stale: bool,
+    ) -> Option<Vec<u8>> {
         match self.network.get(url, false) {
             Response::Found(bytes) => {
-                let portrait = Portrait::decode(&bytes)?;
-                let image = image::RgbaImage::from_raw(128, 128, portrait.pixels)?;
-                let mut png = Cursor::new(Vec::new());
-                image.write_to(&mut png, image::ImageFormat::Png).ok()?;
-                Some(png.into_inner())
+                let encoded = (|| {
+                    let portrait = Portrait::decode(&bytes)?;
+                    let image = image::RgbaImage::from_raw(128, 128, portrait.pixels)?;
+                    let mut png = Cursor::new(Vec::new());
+                    image.write_to(&mut png, image::ImageFormat::Png).ok()?;
+                    Some(png.into_inner())
+                })();
+                if encoded.is_none() && has_stale {
+                    *complete = false;
+                }
+                encoded
             }
             Response::Missing => None,
             Response::Unavailable | Response::RateLimited => {
@@ -1054,7 +1072,56 @@ mod tests {
     }
 
     #[test]
-    fn undecodable_success_is_a_cached_terminal_miss() {
+    fn undecodable_refresh_keeps_stale_portrait_offline_and_retries() {
+        for replies in [
+            vec![Response::Found(b"invalid".to_vec()), Response::Missing],
+            vec![Response::Missing, Response::Found(b"invalid".to_vec())],
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let source = event("author@example.invalid", Some("explicit"));
+            let mut initial = resolver(
+                Some(root.path().to_owned()),
+                true,
+                vec![Response::Found(png())],
+            );
+            let mut events = [source.clone()];
+            initial.resolve(&mut events, None);
+            let original_portrait =
+                events[0].contributor.as_ref().unwrap().portrait.clone();
+            let key = initial.memo.keys().next().unwrap().clone();
+            let path = initial.path(&key).unwrap();
+            let original_record = fs::read(&path).unwrap();
+            let original_png = fs::read(path.with_extension("png")).unwrap();
+            let mut expired = resolver(Some(root.path().to_owned()), true, replies);
+            expired.now += TTL;
+            expired.resolve(&mut events, None);
+            assert_eq!(
+                events[0].contributor.as_ref().unwrap().portrait,
+                original_portrait
+            );
+            assert_eq!(fs::read(&path).unwrap(), original_record);
+            assert_eq!(fs::read(path.with_extension("png")).unwrap(), original_png);
+            let mut offline = resolver(Some(root.path().to_owned()), false, vec![]);
+            offline.now += TTL;
+            let mut events = [source.clone()];
+            offline.resolve(&mut events, None);
+            assert_eq!(
+                events[0].contributor.as_ref().unwrap().portrait,
+                original_portrait
+            );
+            let mut retry = resolver(
+                Some(root.path().to_owned()),
+                true,
+                vec![Response::Found(png())],
+            );
+            retry.now += TTL + 1;
+            retry.resolve(&mut [source], None);
+            assert_eq!(retry.network.calls.len(), 1);
+            assert_eq!(retry.read(&key).unwrap().checked, retry.now);
+        }
+    }
+    #[test]
+    fn first_undecodable_success_is_a_cached_terminal_miss() {
         let root = tempfile::tempdir().unwrap();
         let source = event("author@example.invalid", Some("explicit"));
         let mut initial = resolver(
