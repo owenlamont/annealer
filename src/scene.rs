@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy::{
     asset::RenderAssetUsages,
-    camera::RenderTarget,
+    camera::{Camera3dDepthLoadOp, RenderTarget, visibility::RenderLayers},
     image::ImageSampler,
     input::mouse::{AccumulatedMouseScroll, MouseScrollUnit},
     prelude::*,
@@ -28,6 +28,7 @@ const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
 const LABELS: usize = 72;
 const GRID_LINES: i16 = 20;
+const AVATAR_LAYER: usize = 1;
 
 #[derive(Resource)]
 pub(super) struct Frame {
@@ -43,6 +44,9 @@ struct SceneTarget(RenderTarget);
 
 #[derive(Component)]
 struct SceneCamera;
+
+#[derive(Component)]
+struct AvatarCamera;
 
 #[derive(Component)]
 struct Label;
@@ -220,14 +224,17 @@ fn app(simulation: Simulation, title: String) -> App {
         .add_systems(Update, animate)
         .add_systems(
             PostUpdate,
-            face_portraits.before(bevy::transform::TransformSystems::Propagate),
+            (sync_avatar_camera, face_portraits)
+                .chain()
+                .before(bevy::camera::CameraUpdateSystems)
+                .before(bevy::transform::TransformSystems::Propagate),
         )
         .add_systems(
             PostUpdate,
             labels
                 .after(bevy::camera::CameraUpdateSystems)
                 .after(bevy::transform::TransformSystems::Propagate)
-                .before(UiSystems::Layout),
+                .before(UiSystems::Prepare),
         );
     app
 }
@@ -291,13 +298,29 @@ fn setup(world: &mut World) {
     let camera = world
         .spawn((
             Camera3d::default(),
-            target,
+            target.clone(),
             Tonemapping::None,
             DebandDither::Disabled,
             Transform::from_xyz(6.0, 9.5, 12.0).looking_at(Vec3::ZERO, Vec3::Y),
             SceneCamera,
         ))
         .id();
+    world.spawn((
+        Camera3d {
+            depth_load_op: Camera3dDepthLoadOp::Clear(0.0),
+            ..default()
+        },
+        Camera {
+            order: 1,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        target,
+        RenderLayers::layer(AVATAR_LAYER),
+        Tonemapping::None,
+        DebandDither::Disabled,
+        AvatarCamera,
+    ));
     let theme = world.resource::<Playback>().0.theme().clone();
     let palette = Palette::new(world, &theme);
     let floor = world
@@ -833,6 +856,7 @@ fn attach_portrait(
                 Mesh3d(palette.disc.clone()),
                 MeshMaterial3d(material),
                 Transform::from_xyz(0.0, 0.0, 0.002).with_scale(Vec3::splat(0.9)),
+                RenderLayers::layer(AVATAR_LAYER),
             ))
             .id();
         world
@@ -861,6 +885,7 @@ fn sync_activity(
                 MeshMaterial3d(palette.avatars[index % palette.avatars.len()].clone()),
                 Transform::default(),
                 Visibility::Hidden,
+                RenderLayers::layer(AVATAR_LAYER),
             ))
             .id();
         attach_portrait(world, palette, entity, &avatars[index]);
@@ -1066,12 +1091,18 @@ fn place_labels(
     chosen
 }
 fn labels(world: &mut World) {
-    let mut camera_query =
-        world.query_filtered::<(&Camera, &GlobalTransform), With<SceneCamera>>();
-    let Ok((camera, transform)) = camera_query.single(world) else {
+    let mut camera_query = world
+        .query_filtered::<(Entity, &Camera, &GlobalTransform), With<SceneCamera>>();
+    let Ok((scene_camera, camera, transform)) = camera_query.single(world) else {
         return;
     };
     let (camera, transform) = (camera.clone(), *transform);
+    let Ok(avatar_camera) = world
+        .query_filtered::<Entity, With<AvatarCamera>>()
+        .single(world)
+    else {
+        return;
+    };
     let playback = world.resource::<Playback>();
     let mut caption = playback.0.caption();
     if let Some(camera) = world.get_resource::<PreviewCamera>() {
@@ -1096,14 +1127,22 @@ fn labels(world: &mut World) {
         &mut Visibility,
         &mut TextColor,
         &mut ZIndex,
+        &mut UiTargetCamera,
     ), With<Label>>();
     let theme = &world.resource::<Palette>().theme;
     let (emphasis_color, landmark_color) = (theme.label_emphasis, theme.label_landmark);
     let mut chosen = chosen.into_iter();
-    for (index, (mut text, mut node, mut visibility, mut color, mut z_index)) in
-        query.iter_mut(world).enumerate()
+    for (
+        index,
+        (mut text, mut node, mut visibility, mut color, mut z_index, mut target),
+    ) in query.iter_mut(world).enumerate()
     {
         if let Some((label, point, _)) = chosen.next() {
+            target.0 = if label.kind == model::LabelKind::Avatar {
+                avatar_camera
+            } else {
+                scene_camera
+            };
             z_index.0 = i32::try_from(index).expect("label pool fits in i32");
             let emphasis = label.kind != model::LabelKind::Landmark;
             let label = label.text;
@@ -1133,6 +1172,23 @@ fn labels(world: &mut World) {
     }
 }
 
+fn sync_avatar_camera(world: &mut World) {
+    let Ok((transform, projection)) = world
+        .query_filtered::<(&Transform, &Projection), With<SceneCamera>>()
+        .single(world)
+    else {
+        return;
+    };
+    let (transform, projection) = (*transform, projection.clone());
+    for (mut avatar_transform, mut avatar_projection) in world
+        .query_filtered::<(&mut Transform, &mut Projection), With<AvatarCamera>>()
+        .iter_mut(world)
+    {
+        *avatar_transform = transform;
+        *avatar_projection = projection.clone();
+    }
+}
+
 fn face_portraits(world: &mut World) {
     let rotation = world
         .query_filtered::<&Transform, With<SceneCamera>>()
@@ -1152,6 +1208,99 @@ fn face_portraits(world: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn avatars_use_a_later_depth_cleared_pass_with_the_same_view() {
+        let mut events = crate::timeline::synthetic();
+        events.truncate(2);
+        crate::contributors::Mappings::default().apply(&mut events);
+        events[0].contributor = Some(crate::contributors::Contributor {
+            key: crate::contributors::Key::Config(0),
+            name: "Portrait".to_owned(),
+            accounts: default(),
+            portrait: Some(std::sync::Arc::new(crate::avatars::Portrait {
+                pixels: vec![255; 128 * 128 * 4],
+            })),
+        });
+        events[1].seconds = events[0].seconds;
+        let simulation = Simulation::new(
+            events,
+            &model::Options::default(),
+            &Theme::neon(),
+            &crate::contributors::Mappings::default(),
+        );
+        let mut world = World::new();
+        world.insert_resource(Playback(simulation));
+        world.insert_resource(SceneTarget(Handle::<Image>::default().into()));
+        world.insert_resource(Title("test".to_owned()));
+        world.insert_resource(Frame { index: 30, fps: 30 });
+        world.init_resource::<Pools>();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<Image>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        setup(&mut world);
+        animate(&mut world);
+        sync_avatar_camera(&mut world);
+        let scene = world
+            .query_filtered::<Entity, With<SceneCamera>>()
+            .single(&world)
+            .unwrap();
+        let overlay = world
+            .query_filtered::<Entity, With<AvatarCamera>>()
+            .single(&world)
+            .unwrap();
+        assert!(
+            world.get::<Camera>(overlay).unwrap().order
+                > world.get::<Camera>(scene).unwrap().order
+        );
+        assert!(matches!(
+            world.get::<Camera>(overlay).unwrap().clear_color,
+            ClearColorConfig::None
+        ));
+        assert!(matches!(
+            world.get::<Camera3d>(overlay).unwrap().depth_load_op,
+            Camera3dDepthLoadOp::Clear(0.0)
+        ));
+        assert_eq!(
+            world.get::<Transform>(scene),
+            world.get::<Transform>(overlay)
+        );
+        assert_eq!(
+            world.get::<RenderTarget>(scene).unwrap().as_image(),
+            world.get::<RenderTarget>(overlay).unwrap().as_image()
+        );
+        let layer = RenderLayers::layer(AVATAR_LAYER);
+        assert_eq!(world.get::<RenderLayers>(overlay), Some(&layer));
+        let pools = world.resource::<Pools>();
+        assert_eq!(pools.avatars.len(), 2);
+        for &avatar in &pools.avatars {
+            assert_eq!(world.get::<RenderLayers>(avatar), Some(&layer));
+        }
+        let portrait = pools.avatars[0];
+        let face = world.get::<Children>(portrait).unwrap()[0];
+        assert_eq!(world.get::<RenderLayers>(face), Some(&layer));
+        assert!(world.get::<Children>(pools.avatars[1]).is_none());
+        for &beam in &pools.beams {
+            assert!(world.get::<RenderLayers>(beam).is_none());
+        }
+        let changed =
+            Transform::from_xyz(12.0, 18.0, -6.0).looking_at(Vec3::ZERO, Vec3::Y);
+        world.entity_mut(scene).insert((
+            changed,
+            Projection::Perspective(PerspectiveProjection {
+                fov: 0.8,
+                ..default()
+            }),
+        ));
+        sync_avatar_camera(&mut world);
+        assert_eq!(world.get::<Transform>(overlay), Some(&changed));
+        let Projection::Perspective(projection) =
+            world.get::<Projection>(overlay).unwrap()
+        else {
+            panic!("avatar camera must use the scene projection");
+        };
+        assert_eq!(projection.fov, 0.8);
+    }
 
     #[test]
     fn preview_keys_change_rate_without_seeking_and_loop_at_the_new_rate() {
