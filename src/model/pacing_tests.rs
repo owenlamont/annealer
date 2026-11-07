@@ -1,0 +1,174 @@
+use super::*;
+use crate::timeline::{FileChange, Identity};
+
+fn event(day: i64, changes: Vec<FileChange>) -> Event {
+    Event {
+        seconds: day * 86_400,
+        author: Identity {
+            name: b"Ada".to_vec(),
+            email: Vec::new(),
+        },
+        contributor: None,
+        commit: String::new(),
+        changes,
+    }
+}
+
+fn changes(dir: &str, count: usize, kind: &Kind) -> Vec<FileChange> {
+    (0..count)
+        .map(|index| FileChange {
+            path: format!("{dir}/{index}"),
+            kind: kind.clone(),
+            insertions: 1,
+            removals: 0,
+        })
+        .collect()
+}
+
+fn growth() -> Vec<Event> {
+    let mut events: Vec<_> = (0..40)
+        .map(|day| event(day, changes("a", 1, &Kind::Modified)))
+        .collect();
+    events[0].changes = changes("a", 1, &Kind::Added);
+    events[0].changes.extend(changes("z", 1, &Kind::Added));
+    events[20].changes = changes("a/deep", 80, &Kind::Added);
+    events
+}
+
+fn simulation(events: Vec<Event>, options: &Options) -> Simulation {
+    Simulation::new(events, options, &Theme::neon(), &Mappings::default())
+}
+
+fn snapshot(sim: &Simulation) -> String {
+    format!(
+        "{:?}",
+        (
+            sim.state.tick,
+            sim.state.next_event,
+            sim.layout().dirs().collect::<Vec<_>>(),
+            sim.layout().files().collect::<Vec<_>>(),
+            &sim.state.avatars,
+            &sim.state.pulses,
+            sim.view(),
+        )
+    )
+}
+
+#[test]
+fn mid_gap_rate_changes_preserve_state_and_schedule() {
+    let mut sim = simulation(growth(), &Options::default());
+    sim.advance_to(585, 60);
+    let before = snapshot(&sim);
+    let starts = sim.starts.clone();
+    let duration = sim.duration();
+    for factor in [0.125, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 0.5] {
+        sim.change_rate(factor);
+        assert_eq!(snapshot(&sim), before);
+        assert_eq!(sim.starts, starts);
+        assert_eq!(sim.duration(), duration);
+    }
+}
+
+#[test]
+fn every_multiplier_samples_the_canonical_timeline() {
+    for multiplier in [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0] {
+        let mut sim = simulation(growth(), &Options::default());
+        let mut canonical = simulation(growth(), &Options::default());
+        sim.change_rate(multiplier);
+        let mut elapsed = Duration::ZERO;
+        for _ in 0..frames_for(sim.duration() / multiplier, 8).unwrap() {
+            elapsed += Duration::from_millis(125).mul_f32(sim.playback_multiplier());
+            let frame = preview_frame(elapsed, 60);
+            sim.advance_to(frame, 60);
+            canonical.advance_to(frame, 60);
+            assert_eq!(snapshot(&sim), snapshot(&canonical));
+        }
+        sim.advance_to(585, 60);
+        canonical.advance_to(585, 60);
+        assert_eq!(snapshot(&sim), snapshot(&canonical));
+        sim.restart();
+        assert_eq!(sim.seconds(), 0.0);
+        assert_eq!(sim.playback_multiplier(), multiplier);
+    }
+}
+
+#[test]
+fn multipliers_preserve_canonical_directory_speed() {
+    for factor in [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0] {
+        let mut sim = simulation(growth(), &Options::default());
+        sim.change_rate(factor);
+        let mut previous = BTreeMap::new();
+        let mut worst = 0.0_f32;
+        let frames = frames_for(sim.duration(), 60).unwrap();
+        for _ in 0..frames {
+            sim.tick_layout();
+            let mut current = BTreeMap::new();
+            for (id, dir) in sim.layout().dirs() {
+                if let Some(position) = previous.get(&id) {
+                    worst = worst.max(dir.position.distance(*position) * 60.0);
+                }
+                current.insert(id, dir.position);
+            }
+            previous = current;
+        }
+        eprintln!("factor {factor}: maximum retained-directory speed {worst}");
+        assert!(worst <= 3.001, "factor {factor}: {worst} units/s");
+        assert_eq!(sim.commit(), sim.total());
+    }
+}
+
+#[test]
+fn multipliers_preserve_fading_directory_space() {
+    let mut first = changes("a", 100, &Kind::Added);
+    first.extend(changes("b", 1, &Kind::Added));
+    let events = vec![
+        event(0, first),
+        event(1, changes("a", 100, &Kind::Deleted)),
+        event(2, changes("b", 100, &Kind::Added)),
+        event(3, changes("b", 1, &Kind::Modified)),
+    ];
+    let options = Options {
+        seconds_per_day: 100.0,
+        max_idle_seconds: 200.0,
+        ..Options::default()
+    };
+    for (factor, change_tick) in [(1.0, 0), (0.125, 0), (8.0, 6036)] {
+        let mut sim = simulation(events.clone(), &options);
+        for _ in 0..change_tick {
+            sim.tick_layout();
+        }
+        if change_tick > 0 {
+            assert!(sim.layout().files().any(|(_, file)| {
+                file.state == crate::layout::Presence::Leaving && file.presence > 0.0
+            }));
+        }
+        sim.change_rate(factor);
+        let frames = frames_for(sim.duration(), 60).unwrap();
+        let mut fading = false;
+        for frame in change_tick..frames {
+            sim.tick_layout();
+            fading |= sim.layout().files().any(|(_, file)| {
+                file.state == crate::layout::Presence::Leaving && file.presence > 0.0
+            });
+            let dirs: Vec<_> = sim.layout().dirs().collect();
+            for (index, (_, a)) in dirs.iter().enumerate() {
+                for (_, b) in &dirs[index + 1..] {
+                    assert!(
+                        a.position.distance(b.position) + 0.0001
+                            >= a.radius() + b.radius(),
+                        "factor {factor}: overlap {} / {} at frame {frame}",
+                        a.path,
+                        b.path
+                    );
+                }
+            }
+        }
+        assert!(fading);
+        assert_eq!(sim.commit(), sim.total());
+        assert!(
+            sim.layout()
+                .files()
+                .all(|(_, file)| !file.path.starts_with("a/"))
+        );
+    }
+}

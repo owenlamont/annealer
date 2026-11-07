@@ -14,6 +14,9 @@ use crate::{
 
 #[cfg(test)]
 mod measurement;
+#[cfg(test)]
+mod pacing_tests;
+pub(crate) mod quality;
 
 pub(super) const TICK_RATE: u32 = 60;
 pub(super) const PREVIEW_FPS: u16 = 30;
@@ -121,8 +124,7 @@ pub(super) struct Simulation {
     offset: usize,
     total: usize,
     starts: Vec<f32>,
-    seconds_per_day: f32,
-    max_idle_seconds: f32,
+    playback_multiplier: f32,
     initial: State,
     state: State,
     theme: Theme,
@@ -147,6 +149,20 @@ pub(super) fn event_starts(events: &[Event], rate: f32, idle: f32) -> Vec<f32> {
         .collect()
 }
 
+fn layout_time(time: f32, starts: &[f32]) -> f32 {
+    let next = starts.partition_point(|&start| start <= time);
+    if next == 0 {
+        return time;
+    }
+    let previous = starts[next - 1];
+    // Preserve launch-timeline rounding so existing exports and quality reports stay identical.
+    if next == starts.len() {
+        return previous + time - previous;
+    }
+    let gap = starts[next] - previous;
+    previous + (time - previous) / gap * gap
+}
+
 impl Simulation {
     #[cfg(test)]
     pub(super) fn scheduled_starts(&self) -> &[f32] {
@@ -166,9 +182,11 @@ impl Simulation {
         let end = options
             .commits
             .map_or(events.len(), |count| (start + count).min(events.len()));
+        let layout_starts =
+            event_starts(&events, options.seconds_per_day, options.max_idle_seconds);
         let mut state = State {
             tick: 0,
-            layout: Layout::planned(&events),
+            layout: Layout::scheduled(&events, &layout_starts),
             avatars: Vec::new(),
             authors: HashMap::new(),
             next_event: 0,
@@ -178,7 +196,6 @@ impl Simulation {
             geometry: theme.geometry(),
         };
         for event in &events[..start] {
-            state.layout.begin_commit();
             let author = state.author(
                 event
                     .contributor
@@ -191,6 +208,9 @@ impl Simulation {
             }
         }
         if start > 0 {
+            state
+                .layout
+                .plan_time(layout_starts[start.min(layout_starts.len() - 1)] - LEAD_IN);
             state.layout.settle(SETTLE_TICKS, tick_seconds());
             state.avatars.clear();
             state.authors.clear();
@@ -206,8 +226,7 @@ impl Simulation {
             offset: start,
             total,
             starts,
-            seconds_per_day: options.seconds_per_day,
-            max_idle_seconds: options.max_idle_seconds,
+            playback_multiplier: 1.0,
             initial: state.clone(),
             state,
             theme: theme.clone(),
@@ -220,33 +239,15 @@ impl Simulation {
 
     pub(super) fn restart(&mut self) {
         self.state = self.initial.clone();
-        self.starts =
-            event_starts(&self.events, self.seconds_per_day, self.max_idle_seconds);
     }
 
     pub(super) fn change_rate(&mut self, factor: f32) {
-        let rate = (self.seconds_per_day * factor).clamp(0.01, 86_400.0);
-        let previous =
-            event_starts(&self.events, self.seconds_per_day, self.max_idle_seconds);
-        let mapped = event_starts(&self.events, rate, self.max_idle_seconds);
-        if mapped == previous {
-            return;
-        }
-        let next = self.state.next_event;
-        if next > 0 && next < self.starts.len() {
-            let now = self.seconds();
-            let fraction = ((self.starts[next] - now)
-                / (previous[next] - previous[next - 1]))
-                .clamp(0.0, 1.0);
-            self.starts[next] = now + (mapped[next] - mapped[next - 1]) * fraction;
-            for index in next + 1..self.starts.len() {
-                self.starts[index] =
-                    self.starts[index - 1] + mapped[index] - mapped[index - 1];
-            }
-        } else if next == 0 {
-            self.starts = mapped;
-        }
-        self.seconds_per_day = rate;
+        self.playback_multiplier =
+            (self.playback_multiplier * factor).clamp(0.125, 8.0);
+    }
+
+    pub(super) fn playback_multiplier(&self) -> f32 {
+        self.playback_multiplier
     }
 
     pub(super) fn seconds(&self) -> f32 {
@@ -263,7 +264,8 @@ impl Simulation {
         }
     }
 
-    fn tick(&mut self) {
+    pub(crate) fn tick_layout(&mut self) {
+        let plan_time = layout_time(tick_time(self.state.tick + 1), &self.starts);
         let state = &mut self.state;
         state.tick += 1;
         let now = tick_time(state.tick);
@@ -276,11 +278,20 @@ impl Simulation {
             state.next_event += 1;
         }
         let dt = tick_seconds();
+        state.layout.sample_plan(plan_time, dt);
         state.layout.step(dt);
+    }
+
+    fn tick(&mut self) {
+        self.tick_layout();
+        let state = &mut self.state;
+        let now = tick_time(state.tick);
+        let dt = tick_seconds();
         state.pulses.retain(|pulse| now < pulse.end);
-        for avatar in &mut state.avatars {
+        let targets = state.avatar_targets(now);
+        for (avatar, target) in state.avatars.iter_mut().zip(targets) {
             let omega = 3.0;
-            let acceleration = (avatar.target - avatar.position) * omega * omega
+            let acceleration = (target - avatar.position) * omega * omega
                 - avatar.velocity * 2.0 * omega;
             avatar.velocity += acceleration * dt;
             avatar.velocity.y = 0.0;
@@ -329,14 +340,14 @@ impl Simulation {
             .and_then(|index| self.events.get(index))
         else {
             return format!(
-                "{} / {} commits | {:.2} s/day",
+                "{} / {} commits | {}x",
                 self.commit(),
                 self.total(),
-                self.seconds_per_day
+                self.playback_multiplier
             );
         };
         format!(
-            "{}   |   {}   |   commit {} / {}   |   {:.2} s/day",
+            "{}   |   {}   |   commit {} / {}   |   {}x",
             date(event.seconds),
             event
                 .contributor
@@ -345,7 +356,7 @@ impl Simulation {
                 .name,
             self.commit(),
             self.total,
-            self.seconds_per_day
+            self.playback_multiplier
         )
     }
 
@@ -460,6 +471,56 @@ impl Simulation {
 }
 
 impl State {
+    fn avatar_targets(&self, now: f32) -> Vec<Vec3> {
+        let right = Vec3::new(view_direction().z, 0.0, -view_direction().x).normalize();
+        let unit = 2.0 * self.distance * std::f32::consts::FRAC_PI_8.tan() / 720.0;
+        let mut targets: Vec<_> =
+            self.avatars.iter().map(|avatar| avatar.target).collect();
+        let widths: Vec<_> = self
+            .avatars
+            .iter()
+            .map(|avatar| {
+                count(avatar.name.chars().count()) * self.geometry.label_height * 0.6
+            })
+            .collect();
+        let active_width: f32 = self
+            .avatars
+            .iter()
+            .zip(&widths)
+            .filter(|(avatar, _)| now - avatar.last_active < AVATAR_IDLE)
+            .map(|(_, &width)| width + 12.0)
+            .sum();
+        let (low, high) = self.layout.bounds();
+        let unit = unit.min((high - low).length().max(4.0) / active_width.max(1.0));
+        let mut pairs = Vec::new();
+        for a in 0..targets.len() {
+            for b in a + 1..targets.len() {
+                if now - self.avatars[a].last_active < AVATAR_IDLE
+                    && now - self.avatars[b].last_active < AVATAR_IDLE
+                {
+                    pairs.push((
+                        a,
+                        b,
+                        [(widths[a] + 12.0) * unit, (widths[b] + 12.0) * unit],
+                    ));
+                }
+            }
+        }
+        for _ in 0..16 {
+            for &(a, b, separations) in &pairs {
+                let delta = (targets[b] - targets[a]).dot(right);
+                let separation = separations[usize::from(delta < 0.0)];
+                if delta.abs() < separation {
+                    let sign = delta.signum();
+                    let correction = right * ((separation - delta.abs()) * 0.5 * sign);
+                    targets[a] -= correction;
+                    targets[b] += correction;
+                }
+            }
+        }
+        targets
+    }
+
     fn author(&mut self, contributor: &Contributor, now: f32) -> usize {
         if let Some(&index) = self.authors.get(&contributor.key) {
             return index;
@@ -480,7 +541,6 @@ impl State {
     }
 
     fn begin(&mut self, event: &Event, start: f32) {
-        self.layout.begin_commit();
         let author = self.author(
             event
                 .contributor
@@ -600,11 +660,14 @@ impl State {
     }
 
     fn file_tops(&self) -> Vec<Vec3> {
-        self.layout
+        let mut tops: Vec<_> = self
+            .layout
             .files()
             .flat_map(|(_, file)| {
-                let low = self.geometry.file_min * file.presence.max(0.001);
-                let high = self.geometry.file_max * file.presence.max(0.001);
+                let low = self.geometry.file_min
+                    * file.visible_presence(self.layout.dir(file.dir)).max(0.001);
+                let high = self.geometry.file_max
+                    * file.visible_presence(self.layout.dir(file.dir)).max(0.001);
                 [
                     Vec3::new(low.x, high.y, low.z),
                     Vec3::new(low.x, high.y, high.z),
@@ -613,7 +676,17 @@ impl State {
                 ]
                 .map(|corner| ground(file.position) + corner)
             })
-            .collect()
+            .collect();
+        for (centre, radius) in self.layout.forecast() {
+            let radius = radius / std::f32::consts::FRAC_PI_8.cos();
+            tops.extend((0_u8..8).map(|side| {
+                let point = centre
+                    + Vec2::from_angle(f32::from(side) * std::f32::consts::FRAC_PI_4)
+                        * radius;
+                ground(point) + Vec3::Y * self.geometry.file_max.y
+            }));
+        }
+        tops
     }
 
     fn scene_points(&self, tops: &[Vec3]) -> Vec<Vec3> {
@@ -749,7 +822,7 @@ impl State {
     }
 }
 
-fn apply(
+pub(crate) fn apply(
     layout: &mut Layout,
     change: &crate::timeline::FileChange,
     author: usize,
@@ -858,7 +931,7 @@ pub(super) fn tick_seconds() -> f32 {
     1.0 / count_u32(TICK_RATE)
 }
 
-fn tick_time(tick: u64) -> f32 {
+pub(crate) fn tick_time(tick: u64) -> f32 {
     let whole = u32::try_from(tick / u64::from(TICK_RATE)).unwrap_or(u32::MAX);
     let part =
         u32::try_from(tick % u64::from(TICK_RATE)).expect("remainder fits in u32");
@@ -877,7 +950,7 @@ fn count(value: usize) -> f32 {
     clippy::cast_precision_loss,
     reason = "tick and piece counts beyond 2^24 only lose sub-tick precision"
 )]
-fn count_u32(value: u32) -> f32 {
+pub(crate) fn count_u32(value: u32) -> f32 {
     value as f32
 }
 
@@ -948,6 +1021,38 @@ mod tests {
         }
         assert_eq!(event_starts(&events, 2.0, 1.0), [0.5, 1.0, 1.5, 2.5, 3.0]);
         assert_eq!(event_starts(&events, 1.0, 1.0), [0.5, 0.75, 1.0, 2.0, 2.25]);
+    }
+
+    #[test]
+    fn avatar_targets_separate_names_and_ignore_idle_contributors() {
+        let mut sim = Simulation::new(
+            timeline::synthetic(),
+            &Options::default(),
+            &Theme::neon(),
+            &Mappings::default(),
+        );
+        sim.advance_to(300, 60);
+        assert!(sim.state.avatars.len() >= 2);
+        for avatar in &mut sim.state.avatars {
+            avatar.target = Vec3::ZERO;
+            avatar.last_active = 5.0;
+        }
+        sim.state.avatars[0].name = "a very long contributor name".to_owned();
+        sim.state.avatars[1].name = "X".to_owned();
+        sim.state.distance = 2.0;
+        let targets = sim.state.avatar_targets(5.0);
+        assert!(targets[0].distance(targets[1]) > 1.0);
+        let unit = 2.0 * sim.state.distance * std::f32::consts::FRAC_PI_8.tan() / 720.0;
+        let width = count(sim.state.avatars[0].name.chars().count())
+            * sim.state.geometry.label_height
+            * 0.6;
+        assert!(targets[0].distance(targets[1]) >= (width + 12.0) * unit * 0.99);
+        sim.state.distance = 10_000.0;
+        let bounded = sim.state.avatar_targets(5.0);
+        let (low, high) = sim.state.layout.bounds();
+        assert!(bounded[0].distance(bounded[1]) <= (high - low).length().max(4.0));
+        let idle = sim.state.avatar_targets(5.0 + AVATAR_IDLE);
+        assert!(idle.iter().all(|&target| target == Vec3::ZERO));
     }
 
     #[test]
@@ -1029,11 +1134,11 @@ mod tests {
         assert_eq!(sim.state.avatars[0].position, position);
         assert_eq!(sim.state.pulses[0].end, pulse_end);
         assert_eq!(sim.starts[0], LEAD_IN);
-        assert_eq!(sim.starts[1], 0.875);
+        assert_eq!(sim.starts[1], 1.0);
         assert!(sim.starts.windows(2).all(|pair| pair[1] > pair[0]));
         sim.change_rate(2.0);
         assert!((sim.starts[1] - 1.0).abs() < 0.0001);
-        assert!(sim.caption().contains("0.50 s/day"));
+        assert!(sim.caption().contains("1x"));
         sim.restart();
         assert_eq!(sim.starts, event_starts(&sim.events, 0.5, 1.0));
         assert_eq!(sim.state.next_event, 0);
@@ -1054,30 +1159,17 @@ mod tests {
     }
 
     #[test]
-    fn rate_controls_stop_at_saturated_gaps() {
-        for (seconds, factor) in [(0, 0.5), (86_400, 2.0)] {
-            let mut events = timeline::synthetic();
-            events.truncate(2);
-            events[0].seconds = 0;
-            events[1].seconds = seconds;
-            let mut sim = Simulation::new(
-                events,
-                &Options::default(),
-                &Theme::neon(),
-                &Mappings::default(),
-            );
-            sim.change_rate(factor);
-            assert_eq!(sim.seconds_per_day, 0.5 * factor);
+    fn rate_controls_stop_at_multiplier_bounds() {
+        for (factor, bound) in [(0.5, 0.125), (2.0, 8.0)] {
+            let mut sim = simulation();
+            let starts = sim.starts.clone();
             for _ in 0..32 {
                 sim.change_rate(factor);
             }
-            let rate = sim.seconds_per_day;
-            let starts = sim.starts.clone();
-            sim.change_rate(factor);
-            assert_eq!(sim.seconds_per_day, rate);
+            assert_eq!(sim.playback_multiplier(), bound);
             assert_eq!(sim.starts, starts);
             sim.change_rate(1.0 / factor);
-            assert_ne!(sim.starts, starts);
+            assert_eq!(sim.playback_multiplier(), bound / factor);
         }
     }
 

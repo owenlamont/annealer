@@ -37,13 +37,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Measure tick-sampled layout quality without starting a renderer.
+    #[command(hide = true)]
+    LayoutQuality {
+        #[command(flatten)]
+        source: Source,
+        /// Write per-tick measurements and a summary as JSON Lines.
+        output: PathBuf,
+    },
     /// Inspect local history as JSON; merge changes compare against the first parent.
     Inspect {
         repository: PathBuf,
         #[arg(long, default_value = "HEAD")]
         revision: String,
     },
-    /// Play history in a loop; brackets change speed, Escape closes it.
+    /// Play history in a loop; [ halves and ] doubles live speed (0.125x–8x). Escape closes it.
     Preview {
         #[command(flatten)]
         source: Source,
@@ -63,7 +71,7 @@ enum Command {
     },
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, serde::Serialize)]
 struct Source {
     /// Local repository to play; a built-in synthetic history plays when omitted.
     #[arg(long)]
@@ -85,10 +93,10 @@ struct Source {
     /// Commits to play after the start; defaults to the rest of the history.
     #[arg(long)]
     commits: Option<usize>,
-    /// Playback seconds per calendar day.
+    /// Canonical timeline seconds per calendar day; live speed keys leave the timeline fixed.
     #[arg(long, default_value_t = 0.5, value_parser = positive_seconds)]
     seconds_per_day: f32,
-    /// Maximum playback seconds between commits, compressing idle gaps.
+    /// Maximum canonical timeline seconds between commits, compressing idle gaps.
     #[arg(long, default_value_t = 1.0, value_parser = idle_seconds)]
     max_idle_seconds: f32,
 }
@@ -169,6 +177,32 @@ fn idle_seconds(value: &str) -> Result<f32, String> {
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
+        Some(Command::LayoutQuality { source, output }) => {
+            let started = std::time::Instant::now();
+            let (mut simulation, _) = source.load()?;
+            eprintln!("load_plan_seconds={:.6}", started.elapsed().as_secs_f64());
+            eprintln!(
+                "region_plan_seconds={:.6}",
+                simulation.layout().planning_seconds()
+            );
+            let started = std::time::Instant::now();
+            let mut writer = std::io::BufWriter::new(std::fs::File::create(output)?);
+            serde_json::to_writer(
+                &mut writer,
+                &serde_json::json!({
+                    "schema": 1, "source": source,
+                    "history_events": simulation.total(),
+                    "duration_seconds": simulation.duration(), "tick_rate": model::TICK_RATE,
+                }),
+            )?;
+            std::io::Write::write_all(&mut writer, b"\n")?;
+            model::quality::run(&mut simulation, &mut writer)?;
+            std::io::Write::flush(&mut writer)?;
+            eprintln!(
+                "replay_report_seconds={:.6}",
+                started.elapsed().as_secs_f64()
+            );
+        }
         Some(Command::Inspect {
             repository,
             revision,

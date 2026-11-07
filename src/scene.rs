@@ -396,25 +396,29 @@ fn heading(
 fn preview_clock(world: &mut World, mut elapsed: Local<std::time::Duration>) {
     let keys = world.resource::<ButtonInput<KeyCode>>();
     let factor = if keys.just_pressed(KeyCode::BracketRight) {
-        Some(0.5)
-    } else if keys.just_pressed(KeyCode::BracketLeft) {
         Some(2.0)
+    } else if keys.just_pressed(KeyCode::BracketLeft) {
+        Some(0.5)
     } else {
         None
     };
     if let Some(factor) = factor {
         world.resource_mut::<Playback>().0.change_rate(factor);
     }
-    *elapsed += world.resource::<Time<Real>>().delta();
+    let multiplier = world.resource::<Playback>().0.playback_multiplier();
+    *elapsed += world.resource::<Time<Real>>().delta().mul_f32(multiplier);
     let duration = world.resource::<Playback>().0.duration();
     let fps = world.resource::<Frame>().fps;
     let frames = model::frames_for(duration, fps).unwrap_or(u32::MAX);
-    let frame = model::preview_frame(*elapsed, fps);
-    if frame >= frames {
-        *elapsed = std::time::Duration::ZERO;
+    let period_nanos = (u128::from(frames) * 1_000_000_000).div_ceil(u128::from(fps));
+    if elapsed.as_nanos() >= period_nanos {
+        *elapsed = std::time::Duration::from_nanos(
+            u64::try_from(elapsed.as_nanos() % period_nanos)
+                .expect("loop period fits in u64 nanoseconds"),
+        );
         world.resource_mut::<Playback>().0.restart();
     }
-    world.resource_mut::<Frame>().index = if frame >= frames { 0 } else { frame };
+    world.resource_mut::<Frame>().index = model::preview_frame(*elapsed, fps);
     if world
         .resource::<ButtonInput<KeyCode>>()
         .just_pressed(KeyCode::Escape)
@@ -510,7 +514,7 @@ fn sync_files(
         let position = Vec3::new(file.position.x, 0.0, file.position.y);
         if let Some(mut transform) = world.get_mut::<Transform>(entity) {
             transform.translation = position;
-            transform.scale = Vec3::splat(file.presence.max(0.001));
+            transform.scale = Vec3::splat(file.visible_presence(layout.dir(file.dir)));
         }
         let visual = world
             .get::<FileVisual>(entity)
@@ -1200,6 +1204,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn preview_loop_preserves_overshoot_across_multiple_cycles() {
+        let mut simulation = Simulation::new(
+            crate::timeline::synthetic().into_iter().take(1).collect(),
+            &model::Options::default(),
+            &Theme::neon(),
+            &crate::contributors::Mappings::default(),
+        );
+        assert_eq!(simulation.duration(), 3.0);
+        simulation.change_rate(8.0);
+        let mut app = App::new();
+        app.insert_resource(Playback(simulation))
+            .insert_resource(Frame { index: 0, fps: 30 })
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Time<Real>>()
+            .add_systems(Update, preview_clock);
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .update_with_duration(std::time::Duration::ZERO);
+        let mut total = std::time::Duration::ZERO;
+        let deltas = [
+            400_000_000,
+            1_250_000_000,
+            225_000_000,
+            1_000_000,
+            4_000_000,
+        ]
+        .into_iter()
+        .chain(std::iter::repeat_n(33_333_333, 200));
+        for nanos in deltas {
+            let delta = std::time::Duration::from_nanos(nanos);
+            total += delta.mul_f32(8.0);
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .update_with_duration(delta);
+            app.update();
+            let remainder = std::time::Duration::from_nanos(
+                u64::try_from(total.as_nanos() % 3_000_000_000).unwrap(),
+            );
+            let expected = model::preview_frame(remainder, 30);
+            let world = app.world_mut();
+            let frame = world.resource::<Frame>().index;
+            assert_eq!(frame, expected, "total timeline time: {total:?}");
+            world.resource_mut::<Playback>().0.advance_to(frame, 30);
+            assert_eq!(
+                world.resource::<Playback>().0.seconds(),
+                model::tick_time(u64::from(expected) * 2),
+            );
+        }
+    }
+
+    #[test]
     fn avatars_use_a_later_depth_cleared_pass_with_the_same_view() {
         let mut events = crate::timeline::synthetic();
         events.truncate(2);
@@ -1297,6 +1352,15 @@ mod tests {
         world: &mut World,
         scene: Entity,
     ) {
+        let portrait_label = world
+            .resource::<Playback>()
+            .0
+            .labels()
+            .into_iter()
+            .find(|label| label.text == "Portrait")
+            .unwrap();
+        *world.get_mut::<GlobalTransform>(scene).unwrap() =
+            GlobalTransform::from_translation(portrait_label.position - Vec3::Z * 50.0);
         world.get_mut::<Camera>(scene).unwrap().computed =
             bevy::camera::ComputedCameraValues {
                 clip_from_view: Mat4::from_scale(Vec3::splat(0.01)),
@@ -1361,16 +1425,25 @@ mod tests {
             .press(KeyCode::BracketRight);
         app.world_mut()
             .resource_mut::<Time<Real>>()
+            .update_with_duration(std::time::Duration::ZERO);
+        app.update();
+        assert_eq!(app.world().resource::<Frame>().index, 45);
+        assert_eq!(app.world().resource::<Playback>().0.seconds(), seconds);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
             .update_with_duration(std::time::Duration::from_millis(100));
         app.update();
-        assert_eq!(app.world().resource::<Frame>().index, 51);
+        assert_eq!(app.world().resource::<Frame>().index, 57);
         assert_eq!(app.world().resource::<Playback>().0.seconds(), seconds);
         assert!(
             app.world()
                 .resource::<Playback>()
                 .0
                 .caption()
-                .contains("0.25 s/day")
+                .contains("2x")
         );
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
@@ -1379,18 +1452,18 @@ mod tests {
             .resource_mut::<Time<Real>>()
             .update_with_duration(std::time::Duration::from_secs(30));
         app.update();
-        assert_eq!(app.world().resource::<Frame>().index, 0);
+        assert_eq!(app.world().resource::<Frame>().index, 87);
         assert_eq!(app.world().resource::<Playback>().0.commit(), 0);
         assert_eq!(
             app.world().resource::<Playback>().0.scheduled_starts(),
-            model::event_starts(&crate::timeline::synthetic(), 0.25, 1.0)
+            model::event_starts(&crate::timeline::synthetic(), 0.5, 1.0)
         );
         assert!(
             app.world()
                 .resource::<Playback>()
                 .0
                 .caption()
-                .contains("0.25 s/day")
+                .contains("2x")
         );
     }
 
@@ -1576,7 +1649,15 @@ mod tests {
 
     #[test]
     fn subtree_slots_include_retired_directories_and_survive_reappearance() {
-        let mut layout = Layout::planned(&[]);
+        let mut layout = Layout::planned_paths(
+            &[
+                "early/deep/a.rs",
+                "later/a.rs",
+                "later/deeper/b.rs",
+                "new/a.rs",
+            ],
+            0,
+        );
         layout.add("early/deep/a.rs", 0.0, 0);
         layout.settle(120, 1.0 / 60.0);
         layout.remove("early/deep/a.rs", 0.0, 0);
@@ -1584,7 +1665,7 @@ mod tests {
         layout.add("later/a.rs", 0.0, 0);
         let mut hues = DirectoryHues::default();
         hues.sync(&layout);
-        assert_eq!(hues.slots, [0, 0, 0, 1]);
+        assert_eq!(hues.slots, [0, 0, 0, 1, 1, 2]);
         assert_eq!(layout.dirs().count(), 2);
 
         layout.add("early/deep/b.rs", 0.0, 0);
@@ -1593,12 +1674,20 @@ mod tests {
         hues.sync(&layout);
         assert_eq!(hues.slots, [0, 0, 0, 1, 1, 2]);
 
-        let mut rewind = Layout::planned(&[]);
+        let mut rewind = Layout::planned_paths(
+            &[
+                "early/deep/a.rs",
+                "later/a.rs",
+                "later/deeper/b.rs",
+                "new/a.rs",
+            ],
+            0,
+        );
         rewind.add("early/deep/a.rs", 0.0, 0);
         hues.sync(&rewind);
         rewind.add("later/a.rs", 0.0, 0);
         hues.sync(&rewind);
-        assert_eq!(&hues.slots[..rewind.dir_count()], &[0, 0, 0, 1]);
+        assert_eq!(&hues.slots[..rewind.dir_count()], &[0, 0, 0, 1, 1, 2]);
     }
 
     #[test]
