@@ -68,13 +68,22 @@ Create a deterministic 100-commit test repository with
 cargo run --locked -- preview
 cargo run --locked --release -- preview --repository /path/to/repository
 cargo run --locked --release -- export frames --repository /path/to/repository \
-  --start 1000 --commits 200 --commit-seconds 0.1
+  --start 1000 --commits 200 --seconds-per-day 2 --max-idle-seconds 1
 ```
 
 Without `--repository`, the synthetic history plays, including a move between
 directories, deletions and a 65-file commit. `--start` lays out and settles earlier
 commits before playback; `--commits` limits what plays after it. Preview loops;
-Escape closes the window. WASD pans in free-camera mode, right-drag orbits, and
+Escape closes the window. The right bracket halves seconds per day; the left bracket
+doubles seconds per day, within 0.01–86400. Gaps stay between one simulation tick and
+the idle cap. Rate changes stop when no gap would change; the caption shows the rate.
+`--seconds-per-day` defaults to 0.5; timestamps within a day retain their spacing.
+Coincident, reversed or very close timestamps get a 0.05-second minimum gap
+(limited by the idle cap), preserving commit order. `--max-idle-seconds` defaults
+to 1 playback second: long gaps pause briefly without leaving the scene idle for
+minutes. Pulses, fades, avatar springs and layout relaxation use playback seconds,
+independently of calendar rate; changing speed reschedules only future commits.
+WASD pans in free-camera mode, right-drag orbits, and
 the scroll wheel zooms. Tab follows/cycles currently visible contributors; WASD
 returns to free mode. Follow also returns to free mode when the target fades out.
 Space smoothly restores the fit-to-scene camera in half a second. The caption

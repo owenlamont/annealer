@@ -42,7 +42,7 @@ enum Command {
         #[arg(long, default_value = "HEAD")]
         revision: String,
     },
-    /// Play history in a window, looping; Escape closes it.
+    /// Play history in a loop; brackets change speed, Escape closes it.
     Preview {
         #[command(flatten)]
         source: Source,
@@ -81,8 +81,12 @@ struct Source {
     /// Commits to play after the start; defaults to the rest of the history.
     #[arg(long)]
     commits: Option<usize>,
+    /// Playback seconds per calendar day.
     #[arg(long, default_value_t = 0.5, value_parser = positive_seconds)]
-    commit_seconds: f32,
+    seconds_per_day: f32,
+    /// Maximum playback seconds between commits, compressing idle gaps.
+    #[arg(long, default_value_t = 1.0, value_parser = idle_seconds)]
+    max_idle_seconds: f32,
 }
 
 impl Source {
@@ -116,7 +120,8 @@ impl Source {
             None => (events, "Synthetic history".to_owned()),
         };
         let options = model::Options {
-            commit_seconds: self.commit_seconds,
+            seconds_per_day: self.seconds_per_day,
+            max_idle_seconds: self.max_idle_seconds,
             start: self.start,
             commits: self.commits,
         };
@@ -129,9 +134,19 @@ impl Source {
 
 fn positive_seconds(value: &str) -> Result<f32, String> {
     match value.parse::<f32>() {
-        Ok(seconds) if seconds.is_finite() && seconds >= 0.01 => Ok(seconds),
-        _ => Err("expected seconds of at least 0.01".to_owned()),
+        Ok(seconds) if (0.01..=86_400.0).contains(&seconds) => Ok(seconds),
+        _ => Err("expected seconds between 0.01 and 86400".to_owned()),
     }
+}
+
+fn idle_seconds(value: &str) -> Result<f32, String> {
+    let seconds = positive_seconds(value)?;
+    if seconds < model::tick_seconds() {
+        return Err(
+            "idle cap must be at least one simulation tick (1/60 second)".to_owned(),
+        );
+    }
+    Ok(seconds)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -158,11 +173,28 @@ fn main() -> anyhow::Result<()> {
             let (simulation, title) = source.load().inspect_err(|_| {
                 let _ = std::fs::remove_dir(&directory);
             })?;
-            let frames =
-                frames.unwrap_or_else(|| model::frames_for(simulation.duration(), fps));
+            let frames = frames
+                .map_or_else(|| model::frames_for(simulation.duration(), fps), Ok)
+                .inspect_err(|_| {
+                    let _ = std::fs::remove_dir(&directory);
+                })?;
             export::run(&directory, simulation, title, frames, fps, frame_delay_ms)?;
         }
         None => Cli::command().print_help()?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimum_idle_cap_is_accepted_by_cli() {
+        let cap = model::tick_seconds().to_string();
+        assert!(
+            Cli::try_parse_from(["codestrand", "preview", "--max-idle-seconds", &cap])
+                .is_ok()
+        );
+    }
 }

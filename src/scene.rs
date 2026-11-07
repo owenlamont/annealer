@@ -360,12 +360,28 @@ fn heading(
         .id()
 }
 
-fn preview_clock(world: &mut World) {
-    let elapsed = world.resource::<Time<Real>>().elapsed();
+fn preview_clock(world: &mut World, mut elapsed: Local<std::time::Duration>) {
+    let keys = world.resource::<ButtonInput<KeyCode>>();
+    let factor = if keys.just_pressed(KeyCode::BracketRight) {
+        Some(0.5)
+    } else if keys.just_pressed(KeyCode::BracketLeft) {
+        Some(2.0)
+    } else {
+        None
+    };
+    if let Some(factor) = factor {
+        world.resource_mut::<Playback>().0.change_rate(factor);
+    }
+    *elapsed += world.resource::<Time<Real>>().delta();
     let duration = world.resource::<Playback>().0.duration();
     let fps = world.resource::<Frame>().fps;
-    let frames = model::frames_for(duration, fps);
-    world.resource_mut::<Frame>().index = model::preview_frame(elapsed, fps) % frames;
+    let frames = model::frames_for(duration, fps).unwrap_or(u32::MAX);
+    let frame = model::preview_frame(*elapsed, fps);
+    if frame >= frames {
+        *elapsed = std::time::Duration::ZERO;
+        world.resource_mut::<Playback>().0.restart();
+    }
+    world.resource_mut::<Frame>().index = if frame >= frames { 0 } else { frame };
     if world
         .resource::<ButtonInput<KeyCode>>()
         .just_pressed(KeyCode::Escape)
@@ -1050,6 +1066,69 @@ fn labels(world: &mut World) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn preview_keys_change_rate_without_seeking_and_loop_at_the_new_rate() {
+        let simulation = Simulation::new(
+            crate::timeline::synthetic(),
+            &model::Options::default(),
+            &Theme::neon(),
+            &crate::contributors::Mappings::default(),
+        );
+        let mut app = App::new();
+        app.insert_resource(Playback(simulation))
+            .insert_resource(Frame { index: 0, fps: 60 })
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Time<Real>>()
+            .add_systems(Update, preview_clock);
+        let world = app.world_mut();
+        let mut time = world.resource_mut::<Time<Real>>();
+        time.update_with_duration(std::time::Duration::ZERO);
+        time.update_with_duration(std::time::Duration::from_millis(750));
+        app.update();
+        assert_eq!(app.world().resource::<Frame>().index, 45);
+        app.world_mut()
+            .resource_mut::<Playback>()
+            .0
+            .advance_to(45, 60);
+        let seconds = app.world().resource::<Playback>().0.seconds();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::BracketRight);
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .update_with_duration(std::time::Duration::from_millis(100));
+        app.update();
+        assert_eq!(app.world().resource::<Frame>().index, 51);
+        assert_eq!(app.world().resource::<Playback>().0.seconds(), seconds);
+        assert!(
+            app.world()
+                .resource::<Playback>()
+                .0
+                .caption()
+                .contains("0.25 s/day")
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .update_with_duration(std::time::Duration::from_secs(30));
+        app.update();
+        assert_eq!(app.world().resource::<Frame>().index, 0);
+        assert_eq!(app.world().resource::<Playback>().0.commit(), 0);
+        assert_eq!(
+            app.world().resource::<Playback>().0.scheduled_starts(),
+            model::event_starts(&crate::timeline::synthetic(), 0.25, 1.0)
+        );
+        assert!(
+            app.world()
+                .resource::<Playback>()
+                .0
+                .caption()
+                .contains("0.25 s/day")
+        );
+    }
+
     fn projected_label(
         text: &str,
         kind: model::LabelKind,
@@ -1333,7 +1412,7 @@ mod tests {
                     email: b"ada@example.invalid".to_vec(),
                 },
                 contributor: None,
-                seconds: i64::try_from(index).expect("small fixture"),
+                seconds: 86_400 * i64::try_from(index).expect("small fixture"),
                 changes: vec![FileChange {
                     path: (*path).to_owned(),
                     kind: if index == 0 {
@@ -1425,7 +1504,7 @@ mod tests {
                     email: b"ada@example.invalid".to_vec(),
                 },
                 contributor: None,
-                seconds: 1,
+                seconds: 86_400,
                 changes: vec![FileChange {
                     path: "beta/a.rs".to_owned(),
                     kind: Kind::Moved {
