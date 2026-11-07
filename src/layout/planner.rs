@@ -1,388 +1,507 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::VecDeque,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bevy::math::Vec2;
 
-use super::{Layout, MAX_SPEED, SPACING, hash_angle, parent_path, slot_count};
-use crate::timeline::{Event, Kind};
+use super::{Layout, MAX_ACCELERATION, MAX_SPEED, Presence, parent_path};
+use crate::{model, timeline::Event};
 
-const LOOK_AHEAD_COMMITS: usize = 128;
+const SAMPLE_TICKS: usize = 15;
 const GAP: f32 = 0.3;
+const MIN_RADIUS_FRACTION: f32 = 0.55;
 pub(super) const RELEASE_RADIUS: f32 = 0.05;
-
-fn nearby_pairs(
-    positions: &[Vec2],
-    radii: &[f32],
-    live: &mut [usize],
-    mut visit: impl FnMut(usize, usize, Vec2, f32),
-) {
-    live.sort_by(|&a, &b| {
-        (positions[a].x - radii[a])
-            .total_cmp(&(positions[b].x - radii[b]))
-            .then(a.cmp(&b))
-    });
-    if live.len() <= 32 {
-        for (offset, &a) in live.iter().enumerate() {
-            for &b in &live[offset + 1..] {
-                if positions[b].x - radii[b] > positions[a].x + radii[a] + GAP {
-                    break;
-                }
-                visit(a, b, positions[b] - positions[a], radii[a] + radii[b] + GAP);
-            }
-        }
-        return;
-    }
-    let width = live.iter().map(|&index| radii[index]).fold(0.0, f32::max) * 2.0 + GAP;
-    let mut cells: HashMap<_, Vec<_>> = HashMap::new();
-    for (rank, &index) in live.iter().enumerate() {
-        cells
-            .entry((positions[index] / width).floor().as_ivec2())
-            .or_default()
-            .push((rank, index, positions[index], radii[index]));
-    }
-    for (rank, &a) in live.iter().enumerate() {
-        let cell = (positions[a] / width).floor().as_ivec2();
-        for offset in
-            (-1..=1).flat_map(|y| (-1..=1).map(move |x| bevy::math::IVec2::new(x, y)))
-        {
-            let Some(neighbors) = cells.get(&(cell + offset)) else {
-                continue;
-            };
-            let first = neighbors.partition_point(|&(other, ..)| other <= rank);
-            for &(.., b, position, radius) in &neighbors[first..] {
-                if position.x - radius > positions[a].x + radii[a] + GAP {
-                    break;
-                }
-                let delta = position - positions[a];
-                let reach = radii[a] + radius + GAP;
-                if delta.y.abs() <= reach {
-                    visit(a, b, delta, reach);
-                }
-            }
-        }
-    }
-}
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct Plan {
-    occupancy: Arc<[Vec<(usize, usize)>]>,
-    next_commit: usize,
+    samples: Arc<[Vec<Vec2>]>,
+    footprints: Arc<[Vec<Vec2>]>,
+    pub(super) time: f32,
+    origin: f32,
+    step: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Region {
+    Directory(usize),
+    Split {
+        left: usize,
+        right: usize,
+        axis: usize,
+    },
 }
 
 impl Plan {
-    fn new(layout: &mut Layout, events: &[Event]) -> Self {
-        let mut membership: HashMap<&str, usize> = HashMap::new();
-        let mut counts = vec![0_usize];
-        let mut occupancy = vec![Vec::new()];
-        for (event_index, event) in events.iter().enumerate() {
+    fn new(layout: &mut Layout, events: &[Event], starts: &[f32]) -> Self {
+        let started = Instant::now();
+        for event in events {
             for change in &event.changes {
-                let removed = match &change.kind {
-                    Kind::Deleted => Some(change.path.as_str()),
-                    Kind::Moved { from } => Some(from.as_str()),
-                    _ => None,
-                };
-                if let Some(path) = removed
-                    && let Some(dir) = membership.remove(path)
-                {
-                    counts[dir] -= 1;
-                    occupancy[dir].push((event_index + 1, counts[dir]));
-                }
-                if change.kind == Kind::Deleted
-                    || membership.contains_key(change.path.as_str())
-                {
-                    continue;
-                }
-                let dir = layout.ensure_dir(parent_path(&change.path));
-                counts.resize(layout.dir_count(), 0);
-                occupancy.resize_with(layout.dir_count(), Vec::new);
-                membership.insert(change.path.as_str(), dir);
-                counts[dir] += 1;
-                occupancy[dir].push((event_index + 1, counts[dir]));
+                layout.ensure_dir(parent_path(&change.path));
             }
         }
+        let (required, step) = occupancy(layout, events, starts);
+        let peak: Vec<_> = required
+            .iter()
+            .map(|row| row.iter().copied().fold(0.0, f32::max))
+            .collect();
+        let mut regions = Vec::new();
+        let mut sizes = Vec::new();
+        let mut children = vec![Vec::new(); layout.dir_count()];
+        for (index, dir) in layout.dirs.iter().enumerate() {
+            if let Some(parent) = dir.parent {
+                children[parent].push(index);
+            }
+        }
+        let root = subtree(&children, 0, &peak, &mut regions, &mut sizes);
+        let mut window = 8;
+        let samples = loop {
+            // Dilation covers both box filters and the cubic spline's positive support.
+            let reserved: Vec<_> = required
+                .iter()
+                .zip(&peak)
+                .map(|(row, &peak)| {
+                    maximum(row, window * 2 + 2)
+                        .into_iter()
+                        .map(|radius| radius.max(peak * MIN_RADIUS_FRACTION))
+                        .collect()
+                })
+                .collect();
+            let mut samples = pack(&regions, root, &reserved);
+            anchor_motion(&mut samples, &required);
+            for row in &mut samples {
+                *row = average(&average(row, window), window);
+            }
+            let largest = samples
+                .iter()
+                .flat_map(|row| row.windows(2))
+                .map(|pair| pair[0].distance(pair[1]))
+                .fold(0.0, f32::max);
+            let curvature = samples
+                .iter()
+                .flat_map(|row| row.windows(3))
+                .map(|points| (points[0] - 2.0 * points[1] + points[2]).length())
+                .fold(0.0, f32::max);
+            if largest / step <= MAX_SPEED
+                && curvature / (step * step) <= MAX_ACCELERATION
+            {
+                break samples;
+            }
+            window *= 2;
+        };
+        let footprints = required
+            .iter()
+            .map(|row| {
+                let values: Vec<_> = maximum(row, 6)
+                    .into_iter()
+                    .map(|radius| Vec2::new(radius, f32::from(u8::from(radius > 0.0))))
+                    .collect();
+                average(&average(&values, 2), 2)
+            })
+            .collect::<Vec<_>>();
+        eprintln!(
+            "region_plan_seconds={:.6} directories={} samples={} easing_window_seconds={:.2}",
+            started.elapsed().as_secs_f64(),
+            samples.len(),
+            samples.first().map_or(0, Vec::len),
+            model::count_u32(u32::try_from(window).expect("smoothing window fits u32"))
+                * step
+        );
         Self {
-            occupancy: occupancy.into(),
-            next_commit: 0,
+            samples: samples.into(),
+            footprints: footprints.into(),
+            time: 0.0,
+            origin: 0.0,
+            step,
         }
     }
 
-    pub(super) fn radius(&self, dir: usize) -> f32 {
-        let Some(history) = self.occupancy.get(dir) else {
-            return 0.4;
-        };
-        let first_future =
-            history.partition_point(|&(commit, _)| commit <= self.next_commit);
-        let current = first_future
-            .checked_sub(1)
-            .map_or(0, |index| history[index].1);
-        let peak = history[first_future..]
-            .iter()
-            .take_while(|&&(commit, _)| commit <= self.next_commit + LOOK_AHEAD_COMMITS)
-            .map(|&(_, count)| count)
-            .max()
-            .unwrap_or(0)
-            .max(current);
-        SPACING * slot_count(peak).sqrt() + 0.4
+    pub(super) fn position(&self, dir: usize) -> Option<Vec2> {
+        let row = self.samples.get(dir)?;
+        Some(interpolate(row, self.time, self.step))
     }
 }
 
+fn interpolate(row: &[Vec2], time: f32, step: f32) -> Vec2 {
+    let at = (time.max(0.0) / step).floor();
+    let index = usize::try_from(std::time::Duration::from_secs_f32(at).as_secs())
+        .unwrap_or(usize::MAX)
+        .min(row.len() - 1);
+    let fraction = ((time
+        - model::count_u32(u32::try_from(index).expect("sample index fits u32"))
+            * step)
+        / step)
+        .clamp(0.0, 1.0);
+    let u = fraction;
+    let weights = [
+        (1.0 - u).powi(3),
+        3.0 * u.powi(3) - 6.0 * u * u + 4.0,
+        -3.0 * u.powi(3) + 3.0 * u * u + 3.0 * u + 1.0,
+        u.powi(3),
+    ];
+    let controls = [
+        index.saturating_sub(1),
+        index,
+        (index + 1).min(row.len() - 1),
+        (index + 2).min(row.len() - 1),
+    ];
+    controls
+        .into_iter()
+        .zip(weights)
+        .map(|(index, weight)| row[index] * (weight / 6.0))
+        .sum()
+}
+
+fn occupancy(
+    layout: &Layout,
+    events: &[Event],
+    starts: &[f32],
+) -> (Vec<Vec<f32>>, f32) {
+    let mut shadow = layout.clone();
+    let duration = starts.last().copied().unwrap_or(0.5) + 2.5;
+    let ticks = tick_at(duration);
+    let sample_ticks = (usize::try_from(ticks).expect("tick count fits usize") / 8_192
+        + 1)
+    .max(SAMPLE_TICKS);
+    let step = model::tick_time(
+        u64::try_from(sample_ticks).expect("sample interval fits u64"),
+    );
+    let samples =
+        usize::try_from(ticks).expect("tick count fits usize") / sample_ticks + 2;
+    let mut required = vec![vec![0.0_f32; samples]; layout.dir_count()];
+    let mut event_index = 0;
+    let mut tick = 0;
+    while tick <= ticks {
+        let time = model::tick_time(tick);
+        while starts.get(event_index).is_some_and(|&start| start <= time) {
+            for change in &events[event_index].changes {
+                model::apply(&mut shadow, change, 0);
+            }
+            event_index += 1;
+        }
+        shadow.fade_files(1.0 / 60.0);
+        shadow.compact_slots();
+        let mut active: Vec<_> = shadow.dirs.iter().map(|dir| dir.files > 0).collect();
+        for index in (1..active.len()).rev() {
+            if active[index] {
+                active[shadow.dirs[index]
+                    .parent
+                    .expect("non-root directories have parents")] = true;
+            }
+        }
+        active[0] = true;
+        let sample =
+            usize::try_from(tick).expect("tick count fits usize") / sample_ticks;
+        for (index, dir) in shadow.dirs.iter().enumerate() {
+            let radius = if active[index] { dir.radius() } else { 0.0 };
+            required[index][sample] = required[index][sample].max(radius);
+            required[index][sample + 1] = required[index][sample + 1].max(radius);
+        }
+        let settled = shadow
+            .files
+            .values()
+            .all(|file| file.state == Presence::Present);
+        if settled {
+            let next_sample = u64::try_from((sample + 1) * sample_ticks)
+                .expect("sample tick fits u64");
+            let next_event = starts
+                .get(event_index)
+                .map_or(ticks.saturating_add(1), |&start| tick_at(start));
+            tick = next_sample.min(next_event).max(tick + 1);
+        } else {
+            tick += 1;
+        }
+    }
+    (required, step)
+}
+
+fn tick_at(time: f32) -> u64 {
+    u64::try_from(
+        (Duration::from_secs_f32(time).as_nanos() * u128::from(model::TICK_RATE))
+            .div_ceil(1_000_000_000),
+    )
+    .expect("playback tick fits u64")
+}
+
+fn maximum(values: &[f32], window: usize) -> Vec<f32> {
+    let mut deque: VecDeque<usize> = VecDeque::new();
+    let mut end = 0;
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            while end < values.len().min(index + window + 1) {
+                while deque
+                    .back()
+                    .is_some_and(|&last| values[last] <= values[end])
+                {
+                    deque.pop_back();
+                }
+                deque.push_back(end);
+                end += 1;
+            }
+            while deque
+                .front()
+                .is_some_and(|&first| first < index.saturating_sub(window))
+            {
+                deque.pop_front();
+            }
+            values[*deque.front().expect("window contains its centre")]
+        })
+        .collect()
+}
+
+fn average(values: &[Vec2], window: usize) -> Vec<Vec2> {
+    let width = u16::try_from(window * 2 + 1).expect("smoothing window fits u16");
+    let mut sum =
+        values[0] * f32::from(u16::try_from(window + 1).expect("window fits u16"));
+    for index in 1..=window {
+        sum += values[index.min(values.len() - 1)];
+    }
+    let mut result = Vec::with_capacity(values.len());
+    for index in 0..values.len() {
+        result.push(sum / f32::from(width));
+        sum -= values[index.saturating_sub(window)];
+        sum += values[(index + window + 1).min(values.len() - 1)];
+    }
+    result
+}
+
+fn anchor_motion(samples: &mut [Vec<Vec2>], required: &[Vec<f32>]) {
+    let mut previous: Vec<_> = samples.iter().map(|row| row[0]).collect();
+    let mut shift = Vec2::ZERO;
+    for sample in 1..samples[0].len() {
+        let deltas: Vec<_> = samples
+            .iter()
+            .zip(&previous)
+            .zip(required)
+            .map(|((row, &previous), radii)| {
+                let radius = radii[sample].min(radii[sample - 1]);
+                let weight = if radius > 0.0 {
+                    1.0 + ((radius - 0.4) / super::SPACING).powi(2)
+                } else {
+                    0.0
+                };
+                (row[sample] - previous, weight)
+            })
+            .collect();
+        let total: f32 = deltas.iter().map(|&(_, weight)| weight).sum();
+        let mut translation = if total > 0.0 {
+            deltas
+                .iter()
+                .map(|&(delta, weight)| delta * weight)
+                .sum::<Vec2>()
+                / total
+        } else {
+            Vec2::ZERO
+        };
+        for _ in 0..16 {
+            let mut sum = Vec2::ZERO;
+            let mut total = 0.0;
+            for &(delta, weight) in &deltas {
+                let influence = weight / delta.distance(translation).max(0.0001);
+                sum += delta * influence;
+                total += influence;
+            }
+            if total > 0.0 {
+                translation = sum / total;
+            }
+        }
+        shift += translation;
+        for (row, previous) in samples.iter_mut().zip(&mut previous) {
+            *previous = row[sample];
+            row[sample] -= shift;
+        }
+    }
+}
+
+fn subtree(
+    children: &[Vec<usize>],
+    dir: usize,
+    peak: &[f32],
+    regions: &mut Vec<Region>,
+    sizes: &mut Vec<Vec2>,
+) -> usize {
+    let own = regions.len();
+    regions.push(Region::Directory(dir));
+    sizes.push(Vec2::splat(2.0 * peak[dir] + GAP));
+    let mut entries = vec![own];
+    for &child in &children[dir] {
+        entries.push(subtree(children, child, peak, regions, sizes));
+    }
+    combine(&entries, regions, sizes)
+}
+
+fn combine(
+    entries: &[usize],
+    regions: &mut Vec<Region>,
+    sizes: &mut Vec<Vec2>,
+) -> usize {
+    if entries.len() == 1 {
+        return entries[0];
+    }
+    let total: f32 = entries
+        .iter()
+        .map(|&entry| sizes[entry].element_product())
+        .sum();
+    let mut accumulated = 0.0;
+    let mut middle = 1;
+    let mut imbalance = f32::INFINITY;
+    for (offset, &entry) in entries[..entries.len() - 1].iter().enumerate() {
+        accumulated += sizes[entry].element_product();
+        let difference = (total * 0.5 - accumulated).abs();
+        if difference < imbalance {
+            imbalance = difference;
+            middle = offset + 1;
+        }
+    }
+    let left = combine(&entries[..middle], regions, sizes);
+    let right = combine(&entries[middle..], regions, sizes);
+    let a = sizes[left];
+    let b = sizes[right];
+    let horizontal = Vec2::new(a.x + b.x, a.y.max(b.y));
+    let vertical = Vec2::new(a.x.max(b.x), a.y + b.y);
+    let aspect = |size: Vec2| (size.x / size.y).ln().abs();
+    let axis = usize::from(aspect(vertical) < aspect(horizontal));
+    let index = regions.len();
+    regions.push(Region::Split { left, right, axis });
+    sizes.push(if axis == 0 { horizontal } else { vertical });
+    index
+}
+
+fn pack(regions: &[Region], root: usize, reserved: &[Vec<f32>]) -> Vec<Vec<Vec2>> {
+    let samples = reserved[0].len();
+    let mut result = vec![vec![Vec2::ZERO; samples]; reserved.len()];
+    let mut sizes = vec![Vec2::ZERO; regions.len()];
+    let mut origins = vec![Vec2::ZERO; regions.len()];
+    for sample in 0..samples {
+        for (index, region) in regions.iter().enumerate() {
+            sizes[index] = match *region {
+                Region::Directory(dir) => {
+                    Vec2::splat(2.0 * reserved[dir][sample] + GAP)
+                }
+                Region::Split { left, right, axis } => {
+                    let mut size = sizes[left].max(sizes[right]);
+                    size[axis] = sizes[left][axis] + sizes[right][axis];
+                    size
+                }
+            };
+        }
+        origins[root] = Vec2::ZERO;
+        for (index, region) in regions.iter().enumerate().rev() {
+            match *region {
+                Region::Directory(dir) => {
+                    result[dir][sample] = origins[index] + sizes[index] * 0.5;
+                }
+                Region::Split { left, right, axis } => {
+                    origins[left] = origins[index];
+                    origins[right] = origins[index];
+                    origins[right][axis] += sizes[left][axis];
+                    let other = 1 - axis;
+                    origins[left][other] +=
+                        (sizes[index][other] - sizes[left][other]) * 0.5;
+                    origins[right][other] +=
+                        (sizes[index][other] - sizes[right][other]) * 0.5;
+                }
+            }
+        }
+        let anchor = result[0][sample];
+        for row in &mut result {
+            row[sample] -= anchor;
+        }
+    }
+    result
+}
+
 impl Layout {
-    pub(super) fn relax(&mut self, dt: f32) {
-        let mut live: Vec<_> = self.dirs().map(|(index, _)| index).collect();
-        let mut radii = vec![0.0; self.dirs.len()];
-        for &index in &live {
-            let dir = &mut self.dirs[index];
-            let target = if index != 0 && dir.files == 0 && dir.children == 0 {
-                0.0
-            } else {
-                dir.radius().max(self.plan.radius(index))
-            };
-            dir.reserve += (target - dir.reserve) * (1.0 - (-dt / 0.2).exp());
-            if dir.files > 0 {
-                dir.reserve = dir.reserve.max(dir.radius());
-            }
-            radii[index] = dir.reserve;
-        }
-        let mut positions: Vec<_> = self.dirs.iter().map(|dir| dir.position).collect();
-        let mut pull = vec![Vec2::ZERO; self.dirs.len()];
-        for &index in live.iter().skip(1) {
-            let parent = self.dirs[index]
-                .parent
-                .expect("non-root directory has parent");
-            let delta = positions[index] - positions[parent];
-            let rest = radii[index] + radii[parent] + GAP;
-            let attraction = delta.normalize_or_zero()
-                * (rest - delta.length())
-                * (1.0 - (-dt * 0.6).exp());
-            pull[index] += attraction / slot_count(self.dirs[index].children + 1);
-            if parent != 0 {
-                pull[parent] -= attraction / slot_count(self.dirs[parent].children + 1);
+    pub(crate) fn forecast(&self) -> Vec<(Vec2, f32)> {
+        let mut centres = vec![Vec2::ZERO; self.dirs.len()];
+        let mut points = Vec::new();
+        for (index, row) in self.plan.footprints.iter().enumerate() {
+            let footprint = interpolate(row, self.plan.time, self.plan.step);
+            let dir = &self.dirs[index];
+            let centre = dir.parent.map_or(dir.position, |parent| {
+                centres[parent].lerp(dir.position, footprint.y.clamp(0.0, 1.0))
+            });
+            centres[index] = centre;
+            if footprint.x > 0.0001 {
+                points.push((centre, footprint.x));
             }
         }
-        for &index in &live {
-            positions[index] += pull[index];
-        }
-        for _ in 0..3 {
-            self.separate_discs(&mut positions, &radii, &mut live);
-        }
-        for &index in &live {
-            if index != 0 {
-                let dir = &mut self.dirs[index];
-                dir.position +=
-                    (positions[index] - dir.position).clamp_length_max(MAX_SPEED * dt);
-            }
-        }
+        points
     }
 
-    fn separate_discs(
-        &self,
-        positions: &mut [Vec2],
-        radii: &[f32],
-        live: &mut [usize],
-    ) {
-        let mut correction = vec![Vec2::ZERO; self.dirs.len()];
-        let mut directions = vec![Vec2::ZERO; self.dirs.len()];
-        for &index in live.iter() {
-            directions[index] = Vec2::from_angle(hash_angle(&self.dirs[index].path));
-        }
-        nearby_pairs(positions, radii, live, |a, b, delta, reach| {
-            let distance = delta.length();
-            if distance >= reach {
-                return;
-            }
-            let inverse = distance.recip();
-            let unit = if inverse.is_finite() && inverse > 0.0 {
-                delta * inverse
-            } else {
-                directions[b]
-            };
-            let push = unit * (reach - distance) * 0.5;
-            correction[a] -= push * if b == 0 { 2.0 } else { 1.0 };
-            correction[b] += push * if a == 0 { 2.0 } else { 1.0 };
-        });
-        for &index in live.iter() {
-            if index != 0 {
-                positions[index] += correction[index] * 0.8;
-            }
-        }
-    }
-
-    /// Reserves peak concurrent occupancy over the next 128 commits, excluding past peaks.
+    #[cfg(test)]
     pub(crate) fn planned(events: &[Event]) -> Self {
+        let starts = model::event_starts(events, 0.5, 1.0);
+        Self::scheduled(events, &starts)
+    }
+
+    pub(crate) fn scheduled(events: &[Event], starts: &[f32]) -> Self {
         let mut layout = Self::empty();
-        let plan = Plan::new(&mut layout, events);
+        if !events.is_empty() {
+            layout.plan = Plan::new(&mut layout, events, starts);
+        }
         for (index, dir) in layout.dirs.iter_mut().enumerate() {
             dir.live = index == 0;
             dir.activated = index == 0;
             dir.children = 0;
+            if let Some(position) = layout.plan.position(index) {
+                dir.position = position;
+            }
         }
-        layout.plan = plan;
         layout
     }
 
-    pub(crate) fn begin_commit(&mut self) {
-        self.plan.next_commit += 1;
+    pub(crate) fn plan_time(&mut self, time: f32) {
+        self.plan.time = time;
+        self.plan.origin = time;
+    }
+
+    pub(crate) fn sample_plan(&mut self, time: f32, dt: f32) {
+        self.plan.time = self.plan.origin + time - dt;
+    }
+
+    pub(super) fn relax(&mut self, dt: f32) {
+        self.plan.time += dt;
+        if self.plan.samples.is_empty() {
+            self.relax_unplanned(dt);
+            return;
+        }
+        for (index, dir) in self.dirs.iter_mut().enumerate() {
+            dir.position = self
+                .plan
+                .position(index)
+                .expect("planned directories have trajectories");
+            let target = if index != 0 && dir.files == 0 && dir.children == 0 {
+                0.0
+            } else {
+                dir.radius()
+            };
+            dir.reserve += (target - dir.reserve) * (1.0 - (-dt / 0.2).exp());
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timeline::FileChange;
+    use crate::{
+        contributors::Mappings,
+        model::{Options, Simulation},
+        theme::Theme,
+        timeline::{FileChange, Identity, Kind},
+    };
 
-    const DT: f32 = 1.0 / 60.0;
-
-    #[test]
-    fn grid_matches_brute_force_separation_and_ignores_input_order() {
-        let mut layout = Layout::empty();
-        for index in 1..96 {
-            layout.ensure_dir(&format!("dir-{index}"));
-        }
-        let positions: Vec<_> = (0_i16..96)
-            .map(|index| {
-                Vec2::new(f32::from(index % 12 - 6), f32::from(index / 12 - 4)) * 2.34
-            })
-            .collect();
-        let radii: Vec<_> = (0..96)
-            .map(|index| [0.0, 0.4, 1.02, 4.0][index % 4])
-            .collect();
-        let mut live: Vec<_> = (0..96).filter(|index| index % 7 != 6).collect();
-        let mut original = positions;
-        original[0] = Vec2::ZERO;
-        original[1] = Vec2::ZERO;
-        original[2] = Vec2::new(0.0, radii[0] + radii[2] + GAP);
-        let mut expected = original.clone();
-        let mut actual = original.clone();
-        let mut reversed = original.clone();
-        for _ in 0..3 {
-            live.sort_by(|&a, &b| {
-                (expected[a].x - radii[a])
-                    .total_cmp(&(expected[b].x - radii[b]))
-                    .then(a.cmp(&b))
-            });
-            let mut pairs = Vec::new();
-            let mut correction = vec![Vec2::ZERO; expected.len()];
-            for (a, b) in live.iter().enumerate().flat_map(|(offset, &a)| {
-                live[offset + 1..].iter().map(move |&b| (a, b))
-            }) {
-                let delta = expected[b] - expected[a];
-                let reach = radii[a] + radii[b] + GAP;
-                let distance = delta.length();
-                if distance >= reach {
-                    continue;
-                }
-                pairs.push((a, b));
-                let unit = delta
-                    .normalize_or(Vec2::from_angle(hash_angle(&layout.dirs[b].path)));
-                let push = unit * (reach - distance) * 0.5;
-                correction[a] -= push * if b == 0 { 2.0 } else { 1.0 };
-                correction[b] += push * if a == 0 { 2.0 } else { 1.0 };
-            }
-            let mut found = Vec::new();
-            live.reverse();
-            nearby_pairs(&expected, &radii, &mut live, |a, b, _, _| {
-                if expected[a].distance(expected[b]) < radii[a] + radii[b] + GAP {
-                    found.push((a, b));
-                }
-            });
-            assert_ne!(pairs, []);
-            found.sort_unstable();
-            pairs.sort_unstable();
-            assert_eq!(found, pairs);
-            for &index in live.iter().filter(|&&index| index != 0) {
-                expected[index] += correction[index] * 0.8;
-            }
-            live.reverse();
-            layout.separate_discs(&mut actual, &radii, &mut live);
-            live.reverse();
-            layout.separate_discs(&mut reversed, &radii, &mut live);
-            assert_eq!(actual, reversed);
-            for (actual, expected) in actual.iter().zip(&expected) {
-                assert!(actual.distance(*expected) < 0.000_02);
-            }
-            assert_eq!(actual[0], original[0]);
-        }
-    }
-
-    #[test]
-    #[ignore = "release-mode layout measurement"]
-    fn layout_step_cost() {
-        use std::{hint::black_box, time::Instant};
-
-        for (children, warm_up) in [(12, 10), (3_000, 10), (3_000, 120)] {
-            let mut history = event(&[]);
-            history.changes = (0..children)
-                .map(|index| FileChange {
-                    path: format!("child-{index}/file"),
-                    kind: Kind::Added,
-                    insertions: 1,
-                    removals: 0,
-                })
-                .collect();
-            let mut layout = Layout::planned(std::slice::from_ref(&history));
-            layout.begin_commit();
-            for change in &history.changes {
-                layout.add(&change.path, 0.0, 0);
-            }
-            for _ in 0..warm_up {
-                layout.step(DT);
-            }
-            let positions: Vec<_> =
-                layout.dirs.iter().map(|dir| dir.position).collect();
-            let radii: Vec<_> = layout.dirs.iter().map(|dir| dir.reserve).collect();
-            let mut live: Vec<_> = layout.dirs().map(|(index, _)| index).collect();
-            let mut candidates = 0;
-            let mut overlaps = 0;
-            nearby_pairs(&positions, &radii, &mut live, |a, b, _, _| {
-                candidates += 1;
-                overlaps += usize::from(
-                    positions[a].distance(positions[b]) < radii[a] + radii[b] + GAP,
-                );
-            });
-            println!("candidates={candidates}, overlaps={overlaps}");
-            let mut step = std::time::Duration::ZERO;
-            let mut relax = std::time::Duration::ZERO;
-            let mut separation = std::time::Duration::ZERO;
-            for _ in 0..100 {
-                let mut sample = layout.clone();
-                let start = Instant::now();
-                sample.step(black_box(DT));
-                step += start.elapsed();
-                black_box(sample);
-
-                let mut sample = layout.clone();
-                let start = Instant::now();
-                sample.relax(black_box(DT));
-                relax += start.elapsed();
-                black_box(sample);
-
-                let mut positions: Vec<_> =
-                    layout.dirs.iter().map(|dir| dir.position).collect();
-                let radii: Vec<_> = layout.dirs.iter().map(|dir| dir.reserve).collect();
-                let mut live: Vec<_> = layout.dirs().map(|(index, _)| index).collect();
-                let start = Instant::now();
-                for _ in 0..3 {
-                    layout.separate_discs(&mut positions, &radii, &mut live);
-                }
-                separation += start.elapsed();
-                black_box(positions);
-            }
-            println!(
-                "children={children}, warm_up={warm_up}: step={:.3} ms relax={:.3} ms separation_3x={:.3} ms (100 snapshot samples)",
-                step.as_secs_f64() * 10.0,
-                relax.as_secs_f64() * 10.0,
-                separation.as_secs_f64() * 10.0,
-            );
-        }
-    }
-
-    fn event(changes: &[(&str, Kind)]) -> Event {
+    fn event(seconds: i64, changes: &[(&str, Kind)]) -> Event {
         Event {
-            author: crate::timeline::Identity {
-                name: b"Author".to_vec(),
+            seconds,
+            author: Identity {
+                name: b"Ada".to_vec(),
                 email: Vec::new(),
             },
             contributor: None,
-            seconds: 0,
             changes: changes
                 .iter()
                 .map(|(path, kind)| FileChange {
@@ -395,223 +514,249 @@ mod tests {
         }
     }
 
-    #[test]
-    fn distant_growth_and_deleted_paths_do_not_reserve_lifetime_capacity() {
-        let mut events = vec![event(&[]); LOOK_AHEAD_COMMITS * 3];
-        events[0] = event(&[("old/a", Kind::Added)]);
-        events[1] = event(&[("old/a", Kind::Deleted), ("old/b", Kind::Added)]);
-        events[2] = event(&[("old/b", Kind::Deleted)]);
-        events[LOOK_AHEAD_COMMITS * 2] =
-            event(&[("late/a", Kind::Added), ("late/b", Kind::Added)]);
-        let mut layout = Layout::planned(&events);
-        let old = layout.dir_index["old"];
-        let late = layout.dir_index["late"];
-        let plan = &layout.plan;
-        assert_eq!(plan.radius(old), SPACING + 0.4);
-        assert_eq!(plan.radius(late), 0.4);
-        assert_eq!(layout.dirs().count(), 1);
-        for _ in 0..=LOOK_AHEAD_COMMITS {
-            layout.begin_commit();
+    fn burst() -> Vec<Event> {
+        let mut events = vec![event(0, &[("z/keep", Kind::Added)])];
+        for day in 1..20 {
+            events.push(event(day * 86_400, &[("a/keep", Kind::Modified)]));
         }
-        let plan = &layout.plan;
-        assert_eq!(plan.radius(old), 0.4);
-        assert!(plan.radius(late) > SPACING + 0.4);
-    }
-
-    #[test]
-    fn replacing_a_move_destination_does_not_double_count_occupancy() {
-        let events = [
-            event(&[("a/file", Kind::Added), ("b/file", Kind::Added)]),
-            event(&[(
-                "b/file",
-                Kind::Moved {
-                    from: "a/file".to_owned(),
-                },
-            )]),
-        ];
-        let layout = Layout::planned(&events);
-        let plan = &layout.plan;
-        assert_eq!(plan.radius(layout.dir_index["b"]), SPACING + 0.4);
-    }
-
-    #[test]
-    fn cloned_layouts_share_occupancy_but_advance_cursors_independently() {
-        let events = [event(&[("a/file", Kind::Added)])];
-        let layout = Layout::planned(&events);
-        let mut replay = layout.clone();
-        assert!(Arc::ptr_eq(&layout.plan.occupancy, &replay.plan.occupancy));
-        replay.begin_commit();
-        assert_eq!(layout.plan.next_commit, 0);
-        assert_eq!(replay.plan.next_commit, 1);
-    }
-
-    #[test]
-    fn revival_after_parent_growth_spawns_outside_the_live_reservation() {
-        let mut events = vec![event(&[]); 301];
-        events[0] = event(&[("a/x/file", Kind::Added)]);
-        events[1] = event(&[("a/x/file", Kind::Deleted)]);
-        events[150].changes = (0..200)
+        let mut growth = event(20 * 86_400, &[]);
+        growth.changes = (0..80)
             .map(|index| FileChange {
-                path: format!("a/{index}"),
+                path: format!("a/deep/{index}"),
                 kind: Kind::Added,
                 insertions: 1,
                 removals: 0,
             })
             .collect();
-        events[300] = event(&[("a/x/file", Kind::Added)]);
-        let mut layout = Layout::planned(&events);
-        let child = layout.dir_index["a/x"];
-        let parent = layout.dir_index["a"];
-        for event in &events[..300] {
-            layout.begin_commit();
-            for change in &event.changes {
-                match change.kind {
-                    Kind::Added => {
-                        layout.add(&change.path, 0.0, 0);
-                    }
-                    Kind::Deleted => {
-                        layout.remove(&change.path, 0.0, 0);
-                    }
-                    _ => unreachable!("fixture contains only additions and deletions"),
+        events.push(growth);
+        events.push(event(
+            21 * 86_400,
+            &[(
+                "z/moved",
+                Kind::Moved {
+                    from: "a/keep".to_owned(),
+                },
+            )],
+        ));
+        let mut deletion = event(22 * 86_400, &[]);
+        deletion.changes = (0..79)
+            .map(|index| FileChange {
+                path: format!("a/deep/{index}"),
+                kind: Kind::Deleted,
+                insertions: 0,
+                removals: 1,
+            })
+            .collect();
+        events.push(deletion);
+        events
+    }
+
+    #[test]
+    fn global_sibling_order_never_changes_even_when_later_paths_sort_first() {
+        let events = burst();
+        let layout = Layout::planned(&events);
+        let samples = &layout.plan.samples;
+        for a in 0..samples.len() {
+            for b in a + 1..samples.len() {
+                let mut low = Vec2::splat(f32::INFINITY);
+                let mut high = Vec2::splat(f32::NEG_INFINITY);
+                for (&a, &b) in samples[a].iter().zip(&samples[b]) {
+                    low = low.min(b - a);
+                    high = high.max(b - a);
+                }
+                assert!(low.x > 0.0 || high.x < 0.0 || low.y > 0.0 || high.y < 0.0);
+            }
+        }
+        let mut replay = layout.clone();
+        replay.step(1.0 / 60.0);
+        assert!(Arc::ptr_eq(&layout.plan.samples, &replay.plan.samples));
+        assert_eq!(layout.plan.time, 0.0);
+    }
+
+    #[test]
+    fn region_space_opens_before_a_subtree_burst_without_lifetime_reservation() {
+        let events = burst();
+        let layout = Layout::planned(&events);
+        let a = layout.dir_index["a/deep"];
+        let z = layout.dir_index["a"];
+        let mut plan = layout.plan.clone();
+        let separation = |plan: &Plan| {
+            plan.position(a)
+                .unwrap()
+                .distance(plan.position(z).unwrap())
+        };
+        let early = separation(&plan);
+        plan.time = 10.0;
+        let before = separation(&plan);
+        plan.time = 10.5;
+        let at_growth = separation(&plan);
+        assert!(before > early + 0.5, "early={early}, before={before}");
+        assert!(at_growth >= before);
+        let mut sim = Simulation::new(
+            events,
+            &Options::default(),
+            &Theme::neon(),
+            &Mappings::default(),
+        );
+        for tick in 0..850 {
+            sim.advance_to(tick, 60);
+            let dirs: Vec<_> = sim.layout().dirs().collect();
+            for (offset, (_, a)) in dirs.iter().enumerate() {
+                for (_, b) in &dirs[offset + 1..] {
+                    assert!(
+                        a.position.distance(b.position) + 0.0001
+                            >= a.radius() + b.radius(),
+                        "{} overlaps {} at {tick}",
+                        a.path,
+                        b.path
+                    );
                 }
             }
-            for _ in 0..30 {
-                layout.step(DT);
-            }
         }
-        assert!(!layout.dir(child).live);
-        assert!(
-            layout
-                .dir(child)
-                .position
-                .distance(layout.dir(parent).position)
-                < layout.dir(parent).radius()
-        );
-        let parent_position = layout.dir(parent).position;
-        layout.begin_commit();
-        layout.add("a/x/file", 0.0, 0);
-        assert_eq!(layout.dir(parent).position, parent_position);
-        assert!(
-            layout.dir(child).position.distance(parent_position)
-                >= layout.dir(parent).reserve.max(layout.dir(parent).radius())
-                    + layout.dir(child).radius()
-        );
     }
 
     #[test]
-    fn moving_a_sole_nested_file_releases_space_gradually_without_jumps() {
-        let events = [
-            event(&[("a/deep/file", Kind::Added)]),
-            event(&[(
-                "b/file",
-                Kind::Moved {
-                    from: "a/deep/file".to_owned(),
-                },
-            )]),
-        ];
-        let mut layout = Layout::planned(&events);
-        layout.begin_commit();
-        let id = layout.add("a/deep/file", 0.0, 0);
-        layout.settle(120, DT);
-        let source = layout.dir_index["a/deep"];
-        let before = layout.dirs[source].reserve;
-        let file_position = layout.file(id).unwrap().position;
-        layout.begin_commit();
-        assert_eq!(layout.rename("a/deep/file", "b/file", 0), id);
-        assert_eq!(layout.file(id).unwrap().position, file_position);
-        layout.step(DT);
-        assert!(layout.dir(source).live);
-        assert!((0.0..before).contains(&layout.dirs[source].reserve));
-        let mut replay = layout.clone();
-        for _ in 0..360 {
-            let positions: Vec<_> =
-                layout.dirs.iter().map(|dir| dir.position).collect();
-            layout.step(DT);
-            replay.step(DT);
-            for (dir, previous) in layout.dirs.iter().zip(positions) {
-                assert!(dir.position.distance(previous) <= MAX_SPEED * DT + 1e-5);
-            }
-            assert_eq!(
-                layout
-                    .dirs
-                    .iter()
-                    .map(|dir| dir.position)
-                    .collect::<Vec<_>>(),
-                replay
-                    .dirs
-                    .iter()
-                    .map(|dir| dir.position)
-                    .collect::<Vec<_>>()
-            );
-        }
-        assert!(!layout.dir(source).live);
-        assert!(!layout.dir(layout.dir_index["a"]).live);
-        assert!(layout.dir(layout.dir_index["b"]).live);
-    }
-
-    #[test]
-    fn growing_siblings_settle_without_disc_overlap() {
-        let events = [event(&[
-            ("a/one", Kind::Added),
-            ("a/two", Kind::Added),
-            ("b/one", Kind::Added),
-            ("b/deep/one", Kind::Added),
-        ])];
-        let mut layout = Layout::planned(&events);
-        layout.begin_commit();
-        for change in &events[0].changes {
-            layout.add(&change.path, 0.0, 0);
-        }
-        layout.settle(300, DT);
-        let dirs: Vec<_> = layout.dirs().map(|(_, dir)| dir).collect();
-        for (index, a) in dirs.iter().enumerate() {
-            for b in &dirs[index + 1..] {
+    fn retained_files_and_directories_have_bounded_tick_velocity_and_acceleration() {
+        use std::collections::BTreeMap;
+        let mut sim = Simulation::new(
+            burst(),
+            &Options::default(),
+            &Theme::neon(),
+            &Mappings::default(),
+        );
+        let dt = 1.0 / 60.0;
+        let mut previous = BTreeMap::new();
+        let mut velocities = BTreeMap::new();
+        for tick in 0..950 {
+            sim.advance_to(tick, 60);
+            let positions: BTreeMap<_, _> = sim
+                .layout()
+                .files()
+                .map(|(id, file)| ((false, id), file.position))
+                .chain(sim.layout().dirs().map(|(id, dir)| {
+                    ((true, u64::try_from(id).unwrap()), dir.position)
+                }))
+                .collect();
+            let mut next_velocities = BTreeMap::new();
+            for (&id, &position) in &positions {
+                let Some(&before) = previous.get(&id) else {
+                    continue;
+                };
+                let velocity: Vec2 = (position - before) / dt;
                 assert!(
-                    a.position.distance(b.position) >= a.radius() + b.radius(),
-                    "{} overlaps {}",
-                    a.path,
-                    b.path
+                    velocity.length() <= MAX_SPEED + 0.001,
+                    "speed {:?}: {} at {tick}",
+                    id,
+                    velocity.length()
+                );
+                if let Some(&before) = velocities.get(&id) {
+                    let acceleration: Vec2 = (velocity - before) / dt;
+                    assert!(
+                        acceleration.length() <= MAX_ACCELERATION + 0.02,
+                        "acceleration {:?}: {} at {tick}",
+                        id,
+                        acceleration.length()
+                    );
+                }
+                next_velocities.insert(id, velocity);
+            }
+            previous = positions;
+            velocities = next_velocities;
+        }
+    }
+
+    #[test]
+    fn camera_opens_before_growth_without_a_burst_tick_zoom() {
+        let mut sim = Simulation::new(
+            burst(),
+            &Options::default(),
+            &Theme::neon(),
+            &Mappings::default(),
+        );
+        let mut previous = sim.view().1;
+        let mut early = 0.0;
+        let mut before = 0.0;
+        for tick in 0..700 {
+            sim.advance_to(tick, 60);
+            let distance = sim.view().1;
+            if tick == 300 {
+                early = distance;
+            }
+            if tick == 600 {
+                before = distance;
+            }
+            if tick >= 570 {
+                assert!(
+                    (distance - previous).abs() / previous < 0.02,
+                    "camera zoom at {tick}: {previous} -> {distance}"
                 );
             }
+            previous = distance;
+        }
+        assert!(before > early);
+    }
+
+    #[test]
+    fn maximum_matches_a_brute_force_window() {
+        let values = [0.0_f32, 1.0, 0.0, 4.0, 2.0, 0.0];
+        for window in [0, 1, 4, 20] {
+            let expected: Vec<_> = (0..values.len())
+                .map(|index| {
+                    values[index.saturating_sub(window)
+                        ..values.len().min(index + window + 1)]
+                        .iter()
+                        .copied()
+                        .fold(0.0, f32::max)
+                })
+                .collect();
+            assert_eq!(maximum(&values, window), expected);
         }
     }
 
     #[test]
-    fn deleting_inner_slots_reclaims_the_outer_footprint_without_teleporting() {
-        let events = [
-            event(&[
-                ("a/0", Kind::Added),
-                ("a/1", Kind::Added),
-                ("a/2", Kind::Added),
-                ("a/3", Kind::Added),
-            ]),
-            event(&[
-                ("a/0", Kind::Deleted),
-                ("a/1", Kind::Deleted),
-                ("a/2", Kind::Deleted),
-            ]),
-        ];
-        let mut layout = Layout::planned(&events);
-        layout.begin_commit();
-        for change in &events[0].changes {
-            layout.add(&change.path, 0.0, 0);
-        }
-        layout.settle(120, DT);
-        let id = layout.file_index["a/3"];
-        let position = layout.file(id).unwrap().position;
-        let dir = layout.file(id).unwrap().dir;
-        layout.begin_commit();
-        for path in ["a/0", "a/1", "a/2"] {
-            layout.remove(path, 0.0, 0);
-        }
-        for _ in 0..120 {
-            let previous = layout.file(id).unwrap().position;
-            layout.step(DT);
-            assert!(layout.file(id).unwrap().position.distance(previous) < 0.5);
-        }
-        assert_eq!(layout.file(id).unwrap().slot, 0);
-        assert_eq!(layout.dir(dir).slots.len(), 1);
-        assert!(layout.file(id).unwrap().position.distance(position) > 0.1);
-        assert!((layout.dirs[dir].reserve - (SPACING + 0.4)).abs() < 0.01);
+    fn long_idle_histories_skip_settled_ticks_and_bound_schedule_storage() {
+        let events: Vec<_> = (0..1_000)
+            .map(|day| event(i64::from(day) * 86_400, &[("a/file", Kind::Modified)]))
+            .collect();
+        let starts = model::event_starts(&events, 86_400.0, 86_400.0);
+        assert!(tick_at(starts[999]) > u64::from(u32::MAX));
+        let layout = Layout::scheduled(&events, &starts);
+        assert!(layout.plan.samples[0].len() <= 8_194);
+    }
+
+    #[test]
+    #[ignore = "developer planning cost measurement"]
+    fn planning_cost_large_inline_history() {
+        let events: Vec<_> = (0..1_000)
+            .map(|commit| {
+                let mut entry = event(i64::from(commit) * 3_600, &[]);
+                entry.changes = (0..12)
+                    .map(|file| {
+                        let ordinal = commit * 12 + file;
+                        FileChange {
+                            path: format!(
+                                "crate-{}/src/{}.rs",
+                                ordinal / 4,
+                                ordinal % 4
+                            ),
+                            kind: Kind::Added,
+                            insertions: 1,
+                            removals: 0,
+                        }
+                    })
+                    .collect();
+                entry
+            })
+            .collect();
+        let started = Instant::now();
+        let layout = Layout::planned(&events);
+        eprintln!(
+            "large_inline_plan_seconds={:.6} events={} directories={} files=12000",
+            started.elapsed().as_secs_f64(),
+            events.len(),
+            layout.dir_count()
+        );
+        assert_eq!(layout.dir_count(), 6_001);
+        assert!(layout.plan.samples[0].len() <= 8_194);
     }
 }

@@ -95,7 +95,6 @@ fn sampled_history_overlap() {
                 if LEAD_IN + 0.02 * count(next_event) > now {
                     break;
                 }
-                layout.begin_commit();
                 for change in &event.changes {
                     apply(&mut layout, change, 0);
                 }

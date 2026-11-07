@@ -36,7 +36,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Measure existing layout quality without starting a renderer.
+    /// Measure tick-sampled layout quality without starting a renderer.
     #[command(hide = true)]
     LayoutQuality {
         #[command(flatten)]

@@ -4,11 +4,13 @@ use bevy::math::Vec2;
 use planner::Plan;
 
 mod planner;
+mod reactive;
 
 const SPACING: f32 = 0.62;
 const GOLDEN_ANGLE: f32 = 2.399_963_2;
 const GAP: f32 = 0.8;
 const MAX_SPEED: f32 = 12.0;
+const MAX_ACCELERATION: f32 = 48.0;
 const FILE_EASE: f32 = 5.0;
 const FADE_SECONDS: f32 = 0.6;
 
@@ -25,6 +27,7 @@ pub(super) struct File {
     pub dir: usize,
     slot: usize,
     pub position: Vec2,
+    velocity: Vec2,
     pub presence: f32,
     pub state: Presence,
     delay: f32,
@@ -156,6 +159,7 @@ impl Layout {
                 dir,
                 slot,
                 position: self.dirs[dir].position + spiral(slot),
+                velocity: Vec2::ZERO,
                 presence: 0.0,
                 state: Presence::Arriving,
                 delay,
@@ -231,10 +235,13 @@ impl Layout {
         self.compact_slots();
         self.prune_empty();
         self.relax(dt);
-        let ease = 1.0 - (-FILE_EASE * dt).exp();
         for file in self.files.values_mut() {
             let target = self.dirs[file.dir].position + spiral(file.slot);
-            file.position += (target - file.position) * ease;
+            let desired =
+                ((target - file.position) * FILE_EASE).clamp_length_max(MAX_SPEED);
+            file.velocity +=
+                (desired - file.velocity).clamp_length_max(MAX_ACCELERATION * dt);
+            file.position += file.velocity * dt;
         }
     }
 
@@ -249,10 +256,13 @@ impl Layout {
             };
         }
         for _ in 0..steps {
+            let time = self.plan.time;
             self.step(dt);
+            self.plan.time = time;
         }
         for file in self.files.values_mut() {
             file.position = self.dirs[file.dir].position + spiral(file.slot);
+            file.velocity = Vec2::ZERO;
         }
     }
 
@@ -376,7 +386,10 @@ impl Layout {
             if !self.dirs[index].live {
                 let parent = self.ensure_dir(parent_path(path));
                 self.dirs[parent].children += 1;
-                let position = self.revive_position(index, parent, path);
+                let position = self
+                    .plan
+                    .position(index)
+                    .unwrap_or_else(|| self.revive_position(index, parent, path));
                 let dir = &mut self.dirs[index];
                 dir.live = true;
                 dir.activated = true;

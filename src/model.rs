@@ -164,9 +164,11 @@ impl Simulation {
         let end = options
             .commits
             .map_or(events.len(), |count| (start + count).min(events.len()));
+        let layout_starts =
+            event_starts(&events, options.seconds_per_day, options.max_idle_seconds);
         let mut state = State {
             tick: 0,
-            layout: Layout::planned(&events),
+            layout: Layout::scheduled(&events, &layout_starts),
             avatars: Vec::new(),
             authors: HashMap::new(),
             next_event: 0,
@@ -176,7 +178,6 @@ impl Simulation {
             geometry: theme.geometry(),
         };
         for event in &events[..start] {
-            state.layout.begin_commit();
             let author = state.author(
                 event
                     .contributor
@@ -189,6 +190,9 @@ impl Simulation {
             }
         }
         if start > 0 {
+            state
+                .layout
+                .plan_time(layout_starts[start.min(layout_starts.len() - 1)] - LEAD_IN);
             state.layout.settle(SETTLE_TICKS, tick_seconds());
             state.avatars.clear();
             state.authors.clear();
@@ -274,6 +278,7 @@ impl Simulation {
             state.next_event += 1;
         }
         let dt = tick_seconds();
+        state.layout.sample_plan(now, dt);
         state.layout.step(dt);
         state.pulses.retain(|pulse| now < pulse.end);
         for avatar in &mut state.avatars {
@@ -477,7 +482,6 @@ impl State {
     }
 
     fn begin(&mut self, event: &Event, start: f32) {
-        self.layout.begin_commit();
         let author = self.author(
             event
                 .contributor
@@ -597,7 +601,8 @@ impl State {
     }
 
     fn file_tops(&self) -> Vec<Vec3> {
-        self.layout
+        let mut tops: Vec<_> = self
+            .layout
             .files()
             .flat_map(|(_, file)| {
                 let low = self.geometry.file_min * file.presence.max(0.001);
@@ -610,7 +615,17 @@ impl State {
                 ]
                 .map(|corner| ground(file.position) + corner)
             })
-            .collect()
+            .collect();
+        for (centre, radius) in self.layout.forecast() {
+            let radius = radius / std::f32::consts::FRAC_PI_8.cos();
+            tops.extend((0_u8..8).map(|side| {
+                let point = centre
+                    + Vec2::from_angle(f32::from(side) * std::f32::consts::FRAC_PI_4)
+                        * radius;
+                ground(point) + Vec3::Y * self.geometry.file_max.y
+            }));
+        }
+        tops
     }
 
     fn scene_points(&self, tops: &[Vec3]) -> Vec<Vec3> {
@@ -746,7 +761,7 @@ impl State {
     }
 }
 
-fn apply(
+pub(crate) fn apply(
     layout: &mut Layout,
     change: &crate::timeline::FileChange,
     author: usize,
@@ -855,7 +870,7 @@ pub(super) fn tick_seconds() -> f32 {
     1.0 / count_u32(TICK_RATE)
 }
 
-fn tick_time(tick: u64) -> f32 {
+pub(crate) fn tick_time(tick: u64) -> f32 {
     let whole = u32::try_from(tick / u64::from(TICK_RATE)).unwrap_or(u32::MAX);
     let part =
         u32::try_from(tick % u64::from(TICK_RATE)).expect("remainder fits in u32");
@@ -874,7 +889,7 @@ fn count(value: usize) -> f32 {
     clippy::cast_precision_loss,
     reason = "tick and piece counts beyond 2^24 only lose sub-tick precision"
 )]
-fn count_u32(value: u32) -> f32 {
+pub(crate) fn count_u32(value: u32) -> f32 {
     value as f32
 }
 
