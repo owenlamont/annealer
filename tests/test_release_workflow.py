@@ -198,6 +198,12 @@ def test_notices_ship_in_each_distribution() -> None:
         if step.get("name") == "Verify third-party notices"
     )
     assert verify["run"] == "uv run --script scripts/licenses.py --check"
+    hooks = tomllib.loads((_ROOT / "prek.toml").read_text())
+    assert all(
+        "scripts/licenses.py" not in hook.get("entry", "")
+        for repo in hooks["repos"]
+        for hook in repo["hooks"]
+    )
     stage = next(
         step
         for step in _JOBS["release-assets"]["steps"]
@@ -211,7 +217,16 @@ def test_embedded_font_notice_matches_locked_bevy() -> None:
     bevy_text = next(p for p in lock["package"] if p["name"] == "bevy_text")
     template = (_ROOT / "about.hbs").read_text()
     assert f"Bevy bevy_text {bevy_text['version']} default font" in template
+    assert (
+        f"https://github.com/bevyengine/bevy/blob/v{bevy_text['version']}/"
+        "assets/fonts/FiraMono-LICENSE"
+    ) in template
     assert "SIL OPEN FONT LICENSE Version 1.1" in template
+
+
+def test_notices_contain_no_html_entities() -> None:
+    notices = (_ROOT / "THIRDPARTY.txt").read_text()
+    assert all(entity not in notices for entity in ("&amp;", "&quot;", "&#"))
 
 
 if __name__ == "__main__":

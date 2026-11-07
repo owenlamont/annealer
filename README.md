@@ -150,10 +150,13 @@ authors and repository history remain unchanged.
 Rust 1.99.1, rustfmt and Clippy are pinned in `rust-toolchain.toml`.
 Install [prek](https://prek.j178.dev/) to run the checks shared with CI.
 Install [pixi](https://pixi.sh/) for the pinned cargo-about licence check.
-After changing dependencies, regenerate [third-party notices](THIRDPARTY.txt):
+Before tagging a release, update `CHANGELOG.md` and regenerate
+[third-party notices](THIRDPARTY.txt) after dependency changes. The release workflow
+checks notice freshness and extracts the matching changelog section:
 
 ```sh
 uv run --script scripts/licenses.py
+uv run --script scripts/changelog.py extract v0.1.1
 ```
 
 ```sh

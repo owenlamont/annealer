@@ -21,14 +21,6 @@ hooks = [
 repo = "local"
 hooks = [
   {
-    id = "licenses",
-    name = "Third-party notices are current",
-    entry = "uv run --script scripts/licenses.py --check",
-    language = "system",
-    files = '^(Cargo\.(toml|lock)|about\.(toml|hbs)|THIRDPARTY\.txt|scripts/licenses\.py)$',
-    pass_filenames = false,
-  },
-  {
     id = "release-workflow",
     name = "Release workflow tests",
     entry = "uv run --script tests/test_release_workflow.py",
