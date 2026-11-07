@@ -9,7 +9,7 @@ mod reactive;
 const SPACING: f32 = 0.62;
 const GOLDEN_ANGLE: f32 = 2.399_963_2;
 const GAP: f32 = 0.8;
-const MAX_SPEED: f32 = 12.0;
+const MAX_SPEED: f32 = 3.0;
 const MAX_ACCELERATION: f32 = 48.0;
 const FILE_EASE: f32 = 5.0;
 const FADE_SECONDS: f32 = 0.6;

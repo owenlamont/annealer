@@ -10,8 +10,7 @@ use super::{Layout, MAX_ACCELERATION, MAX_SPEED, Presence, parent_path};
 use crate::{model, timeline::Event};
 
 const SAMPLE_TICKS: usize = 15;
-const GAP: f32 = 0.3;
-const MIN_RADIUS_FRACTION: f32 = 0.55;
+const GAP: f32 = 0.08;
 pub(super) const RELEASE_RADIUS: f32 = 0.05;
 
 #[derive(Clone, Debug, Default)]
@@ -56,17 +55,11 @@ impl Plan {
         }
         let root = subtree(&children, 0, &peak, &mut regions, &mut sizes);
         let mut window = 8;
-        let samples = loop {
+        let mut samples = loop {
             // Dilation covers both box filters and the cubic spline's positive support.
             let reserved: Vec<_> = required
                 .iter()
-                .zip(&peak)
-                .map(|(row, &peak)| {
-                    maximum(row, window * 2 + 2)
-                        .into_iter()
-                        .map(|radius| radius.max(peak * MIN_RADIUS_FRACTION))
-                        .collect()
-                })
+                .map(|row| maximum(row, window * 2 + 2))
                 .collect();
             let mut samples = pack(&regions, root, &reserved);
             anchor_motion(&mut samples, &required);
@@ -75,12 +68,18 @@ impl Plan {
             }
             let largest = samples
                 .iter()
-                .flat_map(|row| row.windows(2))
+                .zip(&required)
+                .flat_map(|(row, radii)| row.windows(2).zip(radii.windows(2)))
+                .filter(|(_, radii)| radii.iter().all(|&radius| radius > 0.0))
+                .map(|(pair, _)| pair)
                 .map(|pair| pair[0].distance(pair[1]))
                 .fold(0.0, f32::max);
             let curvature = samples
                 .iter()
-                .flat_map(|row| row.windows(3))
+                .zip(&required)
+                .flat_map(|(row, radii)| row.windows(3).zip(radii.windows(3)))
+                .filter(|(_, radii)| radii.iter().all(|&radius| radius > 0.0))
+                .map(|(points, _)| points)
                 .map(|points| (points[0] - 2.0 * points[1] + points[2]).length())
                 .fold(0.0, f32::max);
             if largest / step <= MAX_SPEED
@@ -90,6 +89,9 @@ impl Plan {
             }
             window *= 2;
         };
+        for position in samples.iter_mut().flatten() {
+            *position = Vec2::new(position.y, -position.x);
+        }
         let footprints = required
             .iter()
             .map(|row| {
@@ -371,41 +373,107 @@ fn combine(
 }
 
 fn pack(regions: &[Region], root: usize, reserved: &[Vec<f32>]) -> Vec<Vec<Vec2>> {
-    let samples = reserved[0].len();
-    let mut result = vec![vec![Vec2::ZERO; samples]; reserved.len()];
-    let mut sizes = vec![Vec2::ZERO; regions.len()];
-    let mut origins = vec![Vec2::ZERO; regions.len()];
-    for sample in 0..samples {
-        for (index, region) in regions.iter().enumerate() {
-            sizes[index] = match *region {
-                Region::Directory(dir) => {
-                    Vec2::splat(2.0 * reserved[dir][sample] + GAP)
-                }
-                Region::Split { left, right, axis } => {
-                    let mut size = sizes[left].max(sizes[right]);
-                    size[axis] = sizes[left][axis] + sizes[right][axis];
-                    size
-                }
-            };
+    let peak: Vec<_> = reserved
+        .iter()
+        .map(|row| vec![row.iter().copied().fold(0.0, f32::max)])
+        .collect();
+    let reference = pack_regions(regions, root, &peak);
+    compact(&reference, reserved)
+}
+
+fn compact(reference: &[Vec<Vec2>], reserved: &[Vec<f32>]) -> Vec<Vec<Vec2>> {
+    let mut pairs = Vec::new();
+    for a in 0..reference.len() {
+        for b in a + 1..reference.len() {
+            pairs.push((a, b, (reference[b][0] - reference[a][0]).normalize()));
         }
-        origins[root] = Vec2::ZERO;
-        for (index, region) in regions.iter().enumerate().rev() {
-            match *region {
-                Region::Directory(dir) => {
-                    result[dir][sample] = origins[index] + sizes[index] * 0.5;
-                }
-                Region::Split { left, right, axis } => {
-                    origins[left] = origins[index];
-                    origins[right] = origins[index];
-                    origins[right][axis] += sizes[left][axis];
-                    let other = 1 - axis;
-                    origins[left][other] +=
-                        (sizes[index][other] - sizes[left][other]) * 0.5;
-                    origins[right][other] +=
-                        (sizes[index][other] - sizes[right][other]) * 0.5;
+    }
+    let mut result = vec![Vec::new(); reserved.len()];
+    let peak_sum: f32 = reserved
+        .iter()
+        .map(|row| row.iter().copied().fold(0.0, f32::max))
+        .sum();
+    for sample in 0..reserved[0].len() {
+        let scale =
+            reserved.iter().map(|row| row[sample]).sum::<f32>() / peak_sum.max(0.001);
+        let mut positions: Vec<_> =
+            reference.iter().map(|row| row[0] * scale).collect();
+        for iteration in 0..512 {
+            if iteration < 64 {
+                for position in &mut positions {
+                    *position *= 0.98;
                 }
             }
+            let mut violation = 0.0_f32;
+            for &(a, b, normal) in &pairs {
+                let missing = reserved[a][sample] + reserved[b][sample] + GAP
+                    - (positions[b] - positions[a]).dot(normal);
+                if missing > 0.0 {
+                    let correction = normal * (missing * 0.5);
+                    positions[a] -= correction;
+                    positions[b] += correction;
+                    violation = violation.max(missing);
+                }
+            }
+            if iteration >= 64 && violation < 0.001 {
+                break;
+            }
         }
+        let origin = positions[0];
+        for (row, position) in result.iter_mut().zip(positions) {
+            row.push(position - origin);
+        }
+    }
+    result
+}
+
+fn pack_regions(
+    regions: &[Region],
+    root: usize,
+    reserved: &[Vec<f32>],
+) -> Vec<Vec<Vec2>> {
+    let samples = reserved[0].len();
+    let mut result = vec![vec![Vec2::ZERO; samples]; reserved.len()];
+    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); regions.len()];
+    for (index, region) in regions.iter().enumerate() {
+        groups[index] = match *region {
+            Region::Directory(dir) => vec![dir],
+            Region::Split { left, right, .. } => {
+                groups[left].iter().chain(&groups[right]).copied().collect()
+            }
+        };
+    }
+    for sample in 0..samples {
+        for (index, region) in regions.iter().enumerate() {
+            let Region::Split { left, right, axis } = *region else {
+                continue;
+            };
+            let mut shift = 0.0_f32;
+            for &a in &groups[left] {
+                for &b in &groups[right] {
+                    let radii = reserved[a][sample] + reserved[b][sample] + GAP;
+                    let delta = result[b][sample] - result[a][sample];
+                    let separation =
+                        (radii * radii - delta[1 - axis].powi(2)).max(0.0).sqrt();
+                    shift = shift.max(separation - delta[axis]);
+                }
+            }
+            for &dir in &groups[right] {
+                result[dir][sample][axis] += shift;
+            }
+            let mut low = Vec2::splat(f32::INFINITY);
+            let mut high = Vec2::splat(f32::NEG_INFINITY);
+            for &dir in &groups[index] {
+                low = low.min(result[dir][sample] - Vec2::splat(reserved[dir][sample]));
+                high =
+                    high.max(result[dir][sample] + Vec2::splat(reserved[dir][sample]));
+            }
+            let centre = (low + high) * 0.5;
+            for &dir in &groups[index] {
+                result[dir][sample] -= centre;
+            }
+        }
+        debug_assert_eq!(groups[root].len(), reserved.len());
         let anchor = result[0][sample];
         for row in &mut result {
             row[sample] -= anchor;
@@ -710,6 +778,45 @@ mod tests {
                 })
                 .collect();
             assert_eq!(maximum(&values, window), expected);
+        }
+    }
+
+    #[test]
+    fn packing_compacts_after_capacity_retires_and_uses_circular_gaps() {
+        let regions = [
+            Region::Directory(0),
+            Region::Directory(1),
+            Region::Split {
+                left: 0,
+                right: 1,
+                axis: 0,
+            },
+        ];
+        let samples = pack(&regions, 2, &[vec![4.0, 1.0], vec![1.0, 1.0]]);
+        assert!((samples[1][0].length() - 5.0 - GAP).abs() < 0.0001);
+        assert!((samples[1][1].length() - 2.0 - GAP).abs() < 0.0001);
+    }
+
+    #[test]
+    fn compacted_separation_survives_interpolation_during_opposing_growth() {
+        let reference = [
+            vec![Vec2::ZERO],
+            vec![Vec2::new(10.0, 1.0)],
+            vec![Vec2::new(2.0, 12.0)],
+        ];
+        let radii = [vec![4.0, 0.4], vec![0.4, 3.0], vec![2.0, 1.0]];
+        let positions = compact(&reference, &radii);
+        for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let position =
+                |index: usize| positions[index][0].lerp(positions[index][1], fraction);
+            let radius = |index: usize| {
+                radii[index][0] * (1.0 - fraction) + radii[index][1] * fraction
+            };
+            for a in 0..3 {
+                for b in a + 1..3 {
+                    assert!(position(a).distance(position(b)) >= radius(a) + radius(b));
+                }
+            }
         }
     }
 

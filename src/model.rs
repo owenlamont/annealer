@@ -281,9 +281,10 @@ impl Simulation {
         state.layout.sample_plan(now, dt);
         state.layout.step(dt);
         state.pulses.retain(|pulse| now < pulse.end);
-        for avatar in &mut state.avatars {
+        let targets = state.avatar_targets(now);
+        for (avatar, target) in state.avatars.iter_mut().zip(targets) {
             let omega = 3.0;
-            let acceleration = (avatar.target - avatar.position) * omega * omega
+            let acceleration = (target - avatar.position) * omega * omega
                 - avatar.velocity * 2.0 * omega;
             avatar.velocity += acceleration * dt;
             avatar.velocity.y = 0.0;
@@ -463,6 +464,56 @@ impl Simulation {
 }
 
 impl State {
+    fn avatar_targets(&self, now: f32) -> Vec<Vec3> {
+        let right = Vec3::new(view_direction().z, 0.0, -view_direction().x).normalize();
+        let unit = 2.0 * self.distance * std::f32::consts::FRAC_PI_8.tan() / 720.0;
+        let mut targets: Vec<_> =
+            self.avatars.iter().map(|avatar| avatar.target).collect();
+        let widths: Vec<_> = self
+            .avatars
+            .iter()
+            .map(|avatar| {
+                count(avatar.name.chars().count()) * self.geometry.label_height * 0.6
+            })
+            .collect();
+        let active_width: f32 = self
+            .avatars
+            .iter()
+            .zip(&widths)
+            .filter(|(avatar, _)| now - avatar.last_active < AVATAR_IDLE)
+            .map(|(_, &width)| width + 12.0)
+            .sum();
+        let (low, high) = self.layout.bounds();
+        let unit = unit.min((high - low).length().max(4.0) / active_width.max(1.0));
+        let mut pairs = Vec::new();
+        for a in 0..targets.len() {
+            for b in a + 1..targets.len() {
+                if now - self.avatars[a].last_active < AVATAR_IDLE
+                    && now - self.avatars[b].last_active < AVATAR_IDLE
+                {
+                    pairs.push((
+                        a,
+                        b,
+                        [(widths[a] + 12.0) * unit, (widths[b] + 12.0) * unit],
+                    ));
+                }
+            }
+        }
+        for _ in 0..16 {
+            for &(a, b, separations) in &pairs {
+                let delta = (targets[b] - targets[a]).dot(right);
+                let separation = separations[usize::from(delta < 0.0)];
+                if delta.abs() < separation {
+                    let sign = delta.signum();
+                    let correction = right * ((separation - delta.abs()) * 0.5 * sign);
+                    targets[a] -= correction;
+                    targets[b] += correction;
+                }
+            }
+        }
+        targets
+    }
+
     fn author(&mut self, contributor: &Contributor, now: f32) -> usize {
         if let Some(&index) = self.authors.get(&contributor.key) {
             return index;
@@ -960,6 +1011,38 @@ mod tests {
         }
         assert_eq!(event_starts(&events, 2.0, 1.0), [0.5, 1.0, 1.5, 2.5, 3.0]);
         assert_eq!(event_starts(&events, 1.0, 1.0), [0.5, 0.75, 1.0, 2.0, 2.25]);
+    }
+
+    #[test]
+    fn avatar_targets_separate_names_and_ignore_idle_contributors() {
+        let mut sim = Simulation::new(
+            timeline::synthetic(),
+            &Options::default(),
+            &Theme::neon(),
+            &Mappings::default(),
+        );
+        sim.advance_to(300, 60);
+        assert!(sim.state.avatars.len() >= 2);
+        for avatar in &mut sim.state.avatars {
+            avatar.target = Vec3::ZERO;
+            avatar.last_active = 5.0;
+        }
+        sim.state.avatars[0].name = "a very long contributor name".to_owned();
+        sim.state.avatars[1].name = "X".to_owned();
+        sim.state.distance = 2.0;
+        let targets = sim.state.avatar_targets(5.0);
+        assert!(targets[0].distance(targets[1]) > 1.0);
+        let unit = 2.0 * sim.state.distance * std::f32::consts::FRAC_PI_8.tan() / 720.0;
+        let width = count(sim.state.avatars[0].name.chars().count())
+            * sim.state.geometry.label_height
+            * 0.6;
+        assert!(targets[0].distance(targets[1]) >= (width + 12.0) * unit * 0.99);
+        sim.state.distance = 10_000.0;
+        let bounded = sim.state.avatar_targets(5.0);
+        let (low, high) = sim.state.layout.bounds();
+        assert!(bounded[0].distance(bounded[1]) <= (high - low).length().max(4.0));
+        let idle = sim.state.avatar_targets(5.0 + AVATAR_IDLE);
+        assert!(idle.iter().all(|&target| target == Vec3::ZERO));
     }
 
     #[test]
