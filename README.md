@@ -176,13 +176,16 @@ Public repositories work without a token (GitHub's unauthenticated limit is 60 r
 per hour); private repositories need a token with repository access. Rate limits and
 network failures leave playback available.
 
-If GitHub supplies no image, Gravatar is tried with a hash of the trimmed, lowercase
+If GitHub supplies no image, Gravatar is tried with a SHA-256 hash of the trimmed, lowercase
 email and `d=404`, so a missing Gravatar never becomes a generic placeholder. Email
 hashes are identifying information: opting in discloses the hash to Gravatar, account
 names to GitHub, and the repository/commit to GitHub's API. Raw emails are never sent.
 
-Portraits and account resolutions live under `codestrand/avatars/` in the existing
+Portraits and account resolutions live under `codestrand/avatars-v2/` in the existing
 platform cache directory, keyed by a hash of email, explicit accounts and remote.
+Portraits are resized to 128-pixel PNG files beside small JSON account records.
+Fetching covers only contributors in the selected playback window, with a 30-second
+total network budget and count-only diagnostics. Synthetic history never fetches.
 Entries refresh after seven days when fetching is enabled; offline playback can reuse
 expired images. Failed refreshes retain cached images. `--no-cache` disables avatar
 cache reads and writes too. Delete that directory to clear saved avatars. Circular

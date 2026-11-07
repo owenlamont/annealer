@@ -803,7 +803,20 @@ fn attach_portrait(
             TextureFormat::Rgba8UnormSrgb,
             RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
         );
-        image.data = Some(portrait.pixels.clone());
+        let mut pixels = portrait.pixels.clone();
+        let mut level = image::RgbaImage::from_raw(128, 128, portrait.pixels.clone())
+            .expect("portrait pixels are 128 by 128 RGBA");
+        while level.width() > 1 {
+            level = image::imageops::resize(
+                &level,
+                level.width() / 2,
+                level.height() / 2,
+                image::imageops::FilterType::Triangle,
+            );
+            pixels.extend_from_slice(level.as_raw());
+        }
+        image.texture_descriptor.mip_level_count = 8;
+        image.data = Some(pixels);
         image.sampler = ImageSampler::linear();
         let texture = world.resource_mut::<Assets<Image>>().add(image);
         let material =

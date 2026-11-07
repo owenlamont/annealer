@@ -111,13 +111,18 @@ impl Source {
         let mut events = self.events(cache::root().as_deref())?;
         mappings.apply(&mut events);
         let remote = self.repository.as_deref().and_then(avatars::repository);
+        let fetch = self.fetch_avatars && self.repository.is_some();
         let mut resolver = avatars::Resolver::new(
-            avatars::Http::new()?,
+            fetch.then(avatars::Http::new),
             cache::root().filter(|_| !self.no_cache),
-            self.fetch_avatars,
+            fetch,
             avatars::now(),
         );
-        resolver.resolve(&mut events, remote.as_deref());
+        let start = self.start.min(events.len());
+        let end = self.commits.map_or(events.len(), |count| {
+            start.saturating_add(count).min(events.len())
+        });
+        resolver.resolve(&mut events[start..end], remote.as_deref());
         let (events, title) = match &self.repository {
             Some(path) => {
                 let name = path
