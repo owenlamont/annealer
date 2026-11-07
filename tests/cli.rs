@@ -17,12 +17,34 @@ fn help_is_available_without_initialising_the_renderer() {
 }
 
 #[test]
+fn playback_help_describes_calendar_controls_and_rejects_old_flag() {
+    for command in ["preview", "export"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_codestrand"))
+            .args([command, "--help"])
+            .output()
+            .expect("CLI can start");
+        assert!(output.status.success());
+        let help = String::from_utf8(output.stdout).expect("help is UTF-8");
+        assert!(help.contains("--seconds-per-day"));
+        assert!(help.contains("--max-idle-seconds"));
+        assert!(!help.contains("--commit-seconds"));
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_codestrand"))
+        .args(["preview", "--commit-seconds", "0.5"])
+        .output()
+        .expect("CLI can start");
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
 fn invalid_timing_is_rejected_before_creating_output() {
     for (flag, value) in [
         ("--fps", "0"),
         ("--frames", "1"),
         ("--fps", "241"),
-        ("--commit-seconds", "0"),
+        ("--seconds-per-day", "0"),
+        ("--seconds-per-day", "NaN"),
+        ("--max-idle-seconds", "0"),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_codestrand"))
             .args(["export", ".", flag, value])

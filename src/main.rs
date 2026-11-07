@@ -42,7 +42,7 @@ enum Command {
         #[arg(long, default_value = "HEAD")]
         revision: String,
     },
-    /// Play history in a window, looping; Escape closes it.
+    /// Play history in a loop; brackets change speed, Escape closes it.
     Preview {
         #[command(flatten)]
         source: Source,
@@ -81,8 +81,12 @@ struct Source {
     /// Commits to play after the start; defaults to the rest of the history.
     #[arg(long)]
     commits: Option<usize>,
+    /// Playback seconds per calendar day.
     #[arg(long, default_value_t = 0.5, value_parser = positive_seconds)]
-    commit_seconds: f32,
+    seconds_per_day: f32,
+    /// Maximum playback seconds between commits, compressing idle gaps.
+    #[arg(long, default_value_t = 1.0, value_parser = positive_seconds)]
+    max_idle_seconds: f32,
 }
 
 impl Source {
@@ -116,7 +120,8 @@ impl Source {
             None => (events, "Synthetic history".to_owned()),
         };
         let options = model::Options {
-            commit_seconds: self.commit_seconds,
+            seconds_per_day: self.seconds_per_day,
+            max_idle_seconds: self.max_idle_seconds,
             start: self.start,
             commits: self.commits,
         };

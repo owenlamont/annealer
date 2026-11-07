@@ -31,7 +31,8 @@ const SETTLE_TICKS: u32 = 1200;
 const DIR_LABELS: usize = 20;
 
 pub(super) struct Options {
-    pub commit_seconds: f32,
+    pub seconds_per_day: f32,
+    pub max_idle_seconds: f32,
     pub start: usize,
     pub commits: Option<usize>,
 }
@@ -39,7 +40,8 @@ pub(super) struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            commit_seconds: 0.5,
+            seconds_per_day: 0.5,
+            max_idle_seconds: 1.0,
             start: 0,
             commits: None,
         }
@@ -117,10 +119,32 @@ pub(super) struct Simulation {
     events: Vec<Event>,
     offset: usize,
     total: usize,
-    commit_seconds: f32,
+    starts: Vec<f32>,
+    seconds_per_day: f32,
+    max_idle_seconds: f32,
     initial: State,
     state: State,
     theme: Theme,
+}
+
+// A short floor keeps coincident and reversed Git timestamps visible in order.
+fn event_starts(events: &[Event], rate: f32, idle: f32) -> Vec<f32> {
+    let mut previous = events.first().map_or(0, |event| event.seconds);
+    let mut now = LEAD_IN;
+    events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| {
+            if index > 0 {
+                let seconds =
+                    u64::try_from(event.seconds.saturating_sub(previous)).unwrap_or(0);
+                let days = Duration::from_secs(seconds).as_secs_f32() / 86_400.0;
+                now += (days * rate).max(0.05).min(idle);
+            }
+            previous = previous.max(event.seconds);
+            now
+        })
+        .collect()
 }
 
 impl Simulation {
@@ -168,11 +192,15 @@ impl Simulation {
         let total = events.len();
         events.truncate(end);
         events.drain(..start);
+        let starts =
+            event_starts(&events, options.seconds_per_day, options.max_idle_seconds);
         Self {
             events,
             offset: start,
             total,
-            commit_seconds: options.commit_seconds,
+            starts,
+            seconds_per_day: options.seconds_per_day,
+            max_idle_seconds: options.max_idle_seconds,
             initial: state.clone(),
             state,
             theme: theme.clone(),
@@ -180,7 +208,35 @@ impl Simulation {
     }
 
     pub(super) fn duration(&self) -> f32 {
-        LEAD_IN + self.commit_seconds * count(self.events.len()) + TAIL
+        self.starts.last().copied().unwrap_or(LEAD_IN) + TAIL
+    }
+
+    pub(super) fn restart(&mut self) {
+        self.state = self.initial.clone();
+        self.starts =
+            event_starts(&self.events, self.seconds_per_day, self.max_idle_seconds);
+    }
+
+    pub(super) fn change_rate(&mut self, factor: f32) {
+        let rate = (self.seconds_per_day * factor).clamp(0.01, 86_400.0);
+        let previous =
+            event_starts(&self.events, self.seconds_per_day, self.max_idle_seconds);
+        let mapped = event_starts(&self.events, rate, self.max_idle_seconds);
+        let next = self.state.next_event;
+        if next > 0 && next < self.starts.len() {
+            let now = self.seconds();
+            let fraction = ((self.starts[next] - now)
+                / (previous[next] - previous[next - 1]))
+                .clamp(0.0, 1.0);
+            self.starts[next] = now + (mapped[next] - mapped[next - 1]) * fraction;
+            for index in next + 1..self.starts.len() {
+                self.starts[index] =
+                    self.starts[index - 1] + mapped[index] - mapped[index - 1];
+            }
+        } else if next == 0 {
+            self.starts = mapped;
+        }
+        self.seconds_per_day = rate;
     }
 
     pub(super) fn seconds(&self) -> f32 {
@@ -202,7 +258,7 @@ impl Simulation {
         state.tick += 1;
         let now = tick_time(state.tick);
         while let Some(event) = self.events.get(state.next_event) {
-            let start = LEAD_IN + self.commit_seconds * count(state.next_event);
+            let start = self.starts[state.next_event];
             if start > now {
                 break;
             }
@@ -262,10 +318,15 @@ impl Simulation {
             .checked_sub(1)
             .and_then(|index| self.events.get(index))
         else {
-            return format!("{} / {} commits", self.commit(), self.total());
+            return format!(
+                "{} / {} commits | {:.2} s/day",
+                self.commit(),
+                self.total(),
+                self.seconds_per_day
+            );
         };
         format!(
-            "{}   |   {}   |   commit {} / {}",
+            "{}   |   {}   |   commit {} / {}   |   {:.2} s/day",
             date(event.seconds),
             event
                 .contributor
@@ -273,7 +334,8 @@ impl Simulation {
                 .expect("contributors are resolved")
                 .name,
             self.commit(),
-            self.total
+            self.total,
+            self.seconds_per_day
         )
     }
 
@@ -434,11 +496,7 @@ impl State {
             .iter()
             .filter_map(|&(target, ..)| self.destination(target))
             .fold((Vec2::ZERO, 0.0), |(sum, n), point| (sum + point, n + 1.0));
-        for pulse in &mut self.pulses {
-            if pulse.author == author {
-                pulse.end = pulse.end.min(start + 0.3);
-            }
-        }
+
         let avatar = &mut self.avatars[author];
         if centroid.1 > 0.0 {
             avatar.target = ground(centroid.0 / centroid.1);
@@ -853,6 +911,79 @@ mod tests {
     }
 
     #[test]
+    fn calendar_mapping_spreads_busy_days_and_caps_idle_gaps() {
+        let mut events = timeline::synthetic();
+        events.truncate(5);
+        for (event, seconds) in
+            events.iter_mut().zip([0, 21_600, 43_200, 864_000, 885_600])
+        {
+            event.seconds = seconds;
+        }
+        assert_eq!(event_starts(&events, 2.0, 1.0), [0.5, 1.0, 1.5, 2.5, 3.0]);
+        assert_eq!(event_starts(&events, 1.0, 1.0), [0.5, 0.75, 1.0, 2.0, 2.25]);
+    }
+
+    #[test]
+    fn coincident_and_reversed_timestamps_remain_strictly_monotonic() {
+        let mut events = timeline::synthetic();
+        for (event, seconds) in events.iter_mut().zip([100, 100, 90, 95, 101]) {
+            event.seconds = seconds;
+        }
+        for rate in [0.01, 0.5, 100.0] {
+            let starts = event_starts(&events, rate, 1.0);
+            assert!(starts.windows(2).all(|pair| pair[1] > pair[0]));
+            assert!(
+                starts[..5]
+                    .windows(2)
+                    .all(|pair| pair[1] - pair[0] >= 0.049)
+            );
+        }
+        assert_eq!(event_starts(&[], 1.0, 1.0), [] as [f32; 0]);
+    }
+
+    #[test]
+    fn rate_changes_preserve_state_and_progress_through_the_current_gap() {
+        let mut sim = simulation();
+        sim.advance_to(45, 60);
+        let tick = sim.state.tick;
+        let position = sim.state.avatars[0].position;
+        let pulse_end = sim.state.pulses[0].end;
+        sim.change_rate(0.5);
+        assert_eq!(sim.state.tick, tick);
+        assert_eq!(sim.state.next_event, 1);
+        assert_eq!(sim.state.avatars[0].position, position);
+        assert_eq!(sim.state.pulses[0].end, pulse_end);
+        assert_eq!(sim.starts[0], LEAD_IN);
+        assert_eq!(sim.starts[1], 0.875);
+        assert!(sim.starts.windows(2).all(|pair| pair[1] > pair[0]));
+        sim.change_rate(2.0);
+        assert!((sim.starts[1] - 1.0).abs() < 0.0001);
+        assert!(sim.caption().contains("0.50 s/day"));
+        sim.restart();
+        assert_eq!(sim.starts, event_starts(&sim.events, 0.5, 1.0));
+        assert_eq!(sim.state.next_event, 0);
+    }
+
+    #[test]
+    fn dense_same_author_commits_keep_pulses_in_playback_seconds() {
+        let mut events = timeline::synthetic();
+        events.truncate(2);
+        events[1].seconds = events[0].seconds;
+        let mut sim = Simulation::new(
+            events,
+            &Options::default(),
+            &Theme::neon(),
+            &Mappings::default(),
+        );
+        sim.advance_to(36, 60);
+        assert_eq!(sim.commit(), 2);
+        assert_eq!(sim.state.pulses.len(), 2);
+        for pulse in &sim.state.pulses {
+            assert!((pulse.end - pulse.start - PULSE_SECONDS).abs() < 0.0001);
+        }
+    }
+
+    #[test]
     fn construction_preserves_event_buffers_when_selecting_a_range() {
         let events: Vec<_> = ["First", "Second"]
             .into_iter()
@@ -1028,9 +1159,10 @@ mod tests {
 
     #[test]
     fn playback_is_independent_of_frame_rate_and_replay() {
-        for start in [0, 8] {
+        for (start, seconds_per_day) in [(0, 0.01), (0, 0.5), (0, 20.0), (8, 0.5)] {
             let events = timeline::synthetic();
             let options = Options {
+                seconds_per_day,
                 start,
                 ..Options::default()
             };
@@ -1071,7 +1203,7 @@ mod tests {
     #[test]
     fn crowded_commit_aggregates_beams() {
         let mut sim = simulation();
-        let crowded = LEAD_IN + sim.commit_seconds * 7.0 + 0.5;
+        let crowded = sim.starts[7] + 0.5;
         sim.advance_to(frame_at(crowded), 30);
         let beams = sim.beams();
         assert!(!beams.is_empty());
