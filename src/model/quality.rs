@@ -27,6 +27,50 @@ struct Movement {
     max_directory_jump: f64,
 }
 
+const FAST_SPEED: f64 = 6.0;
+
+#[derive(Default)]
+struct Speeds {
+    values: Vec<f64>,
+    fast_distance: f64,
+}
+
+impl Speeds {
+    fn record<K: Ord>(
+        &mut self,
+        before: &BTreeMap<K, Vec2>,
+        after: &BTreeMap<K, Vec2>,
+    ) {
+        for (id, position) in after {
+            if let Some(previous) = before.get(id) {
+                let distance = f64::from(position.distance(*previous));
+                let speed = distance * 60.0;
+                self.values.push(speed);
+                if speed > FAST_SPEED {
+                    self.fast_distance += distance;
+                }
+            }
+        }
+    }
+
+    fn summary(&mut self) -> serde_json::Value {
+        self.values.sort_by(f64::total_cmp);
+        let percentile = |percent: usize| {
+            self.values
+                .get(
+                    (self.values.len() * percent)
+                        .div_ceil(100)
+                        .saturating_sub(1),
+                )
+                .copied()
+                .unwrap_or(0.0)
+        };
+        serde_json::json!({"p95": percentile(95), "p99": percentile(99),
+            "max": self.values.last().copied().unwrap_or(0.0),
+            "distance_above_threshold": self.fast_distance, "observations": self.values.len()})
+    }
+}
+
 /// Birth and reactivation placement is excluded by intersecting consecutive live IDs.
 fn displacement<K: Ord>(
     before: &BTreeMap<K, Vec2>,
@@ -119,17 +163,15 @@ pub(crate) fn run(
     simulation: &mut Simulation,
     writer: &mut impl Write,
 ) -> anyhow::Result<()> {
-    serde_json::to_writer(
-        &mut *writer,
-        &serde_json::json!({"definitions": DEFINITIONS}),
-    )?;
-    writeln!(writer)?;
+    definitions(writer)?;
     let frames = super::frames_for(simulation.duration(), 60)?;
     let mut previous_files = BTreeMap::new();
     let mut previous_dirs = BTreeMap::new();
     let mut hotspots: BTreeMap<String, Hotspot> = BTreeMap::new();
     let mut commits: BTreeMap<usize, Movement> = BTreeMap::new();
     let mut total = Movement::default();
+    let mut file_speeds = Speeds::default();
+    let mut directory_speeds = Speeds::default();
     let mut net = NetMovement::default();
     let mut interval = NetMovement::default();
     let mut interval_commit = simulation.commit();
@@ -162,6 +204,8 @@ pub(crate) fn run(
             add_vectors(&mut vectors.files, &previous_files, &files);
             add_vectors(&mut vectors.directories, &previous_dirs, &dirs);
         }
+        file_speeds.record(&previous_files, &files);
+        directory_speeds.record(&previous_dirs, &dirs);
         previous_files = files;
         previous_dirs = dirs;
         let movement = Movement {
@@ -209,6 +253,9 @@ pub(crate) fn run(
                 "min_diameter": minimum.is_finite().then_some(minimum),
                 "mean_extent_use": extent_sum / f64::from(frames + 1),
                 "movement": total, "per_commit": commits, "hotspots": hotspots,
+                "speed_threshold": FAST_SPEED,
+                "file_speed": file_speeds.summary(),
+                "directory_speed": directory_speeds.summary(),
                 "net_file_directory_displacement": net.measure(),
                 "per_commit_net_file_directory_displacement": per_commit_net
             }
@@ -221,6 +268,26 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speeds_include_stationary_ids_exclude_births_and_use_strict_threshold() {
+        let mut speeds = Speeds::default();
+        assert_eq!(speeds.summary()["p99"], 0.0);
+        let before = BTreeMap::from([(1, Vec2::ZERO), (2, Vec2::ZERO)]);
+        let after = BTreeMap::from([
+            (1, Vec2::ZERO),
+            (2, Vec2::X * 0.25),
+            (3, Vec2::X * 100.0),
+        ]);
+        speeds.record(&before, &after);
+        let summary = speeds.summary();
+        assert_eq!(summary["observations"], 2);
+        assert_eq!(summary["p95"], 15.0);
+        assert_eq!(summary["p99"], 15.0);
+        assert_eq!(summary["max"], 15.0);
+        assert_eq!(summary["distance_above_threshold"], 0.25);
+        assert_eq!(speeds.values[0], 0.0);
+    }
 
     #[test]
     fn overlap_excludes_tangency_and_separation() {
@@ -387,4 +454,14 @@ fn overlap_pairs(
             .iter()
             .filter_map(move |b| overlaps((a.1, a.2), (b.1, b.2)).then_some((a.0, b.0)))
     })
+}
+
+fn definitions(writer: &mut impl Write) -> anyhow::Result<()> {
+    serde_json::to_writer(
+        &mut *writer,
+        &serde_json::json!({"definitions": DEFINITIONS,
+            "speed_definitions": "Nearest-rank p95/p99/max over retained-ID per-tick speeds, including stationary observations, separately for files and live directories. World units per playback second (tick distance times 60). Birth/reactivation placement excluded. Fast distance sums the full tick distance when speed strictly exceeds 6 world units/s: 0.1 units per 60 Hz tick, approximately 19% of a full-size file's 0.54-unit diameter per tick. Threshold is world-space, independent of camera zoom."}),
+    )?;
+    writeln!(writer)?;
+    Ok(())
 }
