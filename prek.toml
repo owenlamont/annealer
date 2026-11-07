@@ -21,6 +21,22 @@ hooks = [
 repo = "local"
 hooks = [
   {
+    id = "release-workflow",
+    name = "Release workflow tests",
+    entry = "uv run --script tests/test_release_workflow.py",
+    language = "system",
+    files = '^(tests/test_release_workflow\.py|\.github/workflows/release\.yml)$',
+    pass_filenames = false,
+  },
+  {
+    id = "changelog",
+    name = "Changelog tests",
+    entry = "uv run --script tests/test_changelog.py",
+    language = "system",
+    files = '^(scripts/changelog\.py|tests/test_changelog\.py|CHANGELOG\.md)$',
+    pass_filenames = false,
+  },
+  {
     id = "icon-import",
     name = "Icon importer tests",
     entry = "uv run --script tests/test_import_icons.py",

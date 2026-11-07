@@ -6,7 +6,8 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish to PyPI, crates.io and npm
+        description: >-
+          Publish to PyPI, crates.io and npm. Only publishes when dispatched on a v* tag ref.
         type: boolean
         default: false
 
@@ -45,6 +46,48 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"version={cargo}\n")
           PY
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          enable-cache: false
+          save-cache: false
+      - name: Verify changelog section
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: uv run --script scripts/changelog.py extract "v${VERSION}"
+
+  preflight-release-guard:
+    name: Preflight release guard
+    needs: [version-check]
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Ensure existing release (if any) is a draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |-
+          set -euo pipefail
+          release_query_err_file="$(mktemp)"
+          if release_is_draft="$(gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft' 2>"${release_query_err_file}")"; then
+            :
+          elif grep -Eq '404|not[[:space:]]+found' "${release_query_err_file}"; then
+            echo "No release exists for ${RELEASE_TAG}; continuing."
+            exit 0
+          else
+            echo "Failed to query release ${RELEASE_TAG}." >&2
+            cat "${release_query_err_file}" >&2
+            exit 1
+          fi
+          if [ "${release_is_draft}" = "true" ]; then
+            echo "Draft release ${RELEASE_TAG} already exists; continuing for rerun safety."
+            exit 0
+          fi
+          echo "Published release ${RELEASE_TAG} already exists; refusing to continue." >&2
+          exit 1
 
   wheels:
     needs: version-check
@@ -70,6 +113,19 @@ jobs:
         with:
           persist-credentials: false
       - name: Build wheel
+        id: build
+        continue-on-error: true
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          args: --release --locked --out dist
+          manylinux: '2_28'
+          before-script-linux: >-
+            dnf install -y alsa-lib-devel systemd-devel libX11-devel
+            libXcursor-devel libXi-devel libXrandr-devel libxkbcommon-devel
+            wayland-devel mesa-libEGL-devel
+      - name: Build wheel (retry)
+        if: steps.build.outcome == 'failure'
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           target: ${{ matrix.target }}
@@ -100,6 +156,7 @@ jobs:
           with zipfile.ZipFile(f"binaries/codestrand-{target}.zip", "w",
                                zipfile.ZIP_DEFLATED) as archive:
               info = zipfile.ZipInfo(executable)
+              info.compress_type = zipfile.ZIP_DEFLATED
               info.create_system = 3
               info.external_attr = 0o100755 << 16
               archive.writestr(info, data)
@@ -137,39 +194,168 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
-  draft-github-release:
-    needs: [wheels, sdist]
-    if: >-
-      startsWith(github.ref, 'refs/tags/v') &&
-      (github.event_name == 'push' || inputs.publish)
-    runs-on: ubuntu-latest
+  smoke-wheels:
+    needs: [wheels, version-check]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          merge-multiple: true
+          name: wheels-${{ matrix.target }}
           path: dist
-      - name: Create or update draft release
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          enable-cache: false
+          save-cache: false
+      - name: Install Linux runtime dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2t64 libudev1 libxkbcommon0 libwayland-client0 libegl1
+      - name: Install wheel and run CLI
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.version-check.outputs.version }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for attempt in 1 2 3; do
+            if uv python install 3.15 \
+              && uv venv --clear -p 3.15 .venv \
+              && uv pip install -p .venv --no-index --find-links dist codestrand \
+              && uv run --no-project -p .venv codestrand --help \
+              && [ "$(uv run --no-project -p .venv codestrand --version)" = "codestrand ${VERSION}" ]; then
+              exit 0
+            fi
+            echo "Smoke attempt ${attempt} failed; retrying" >&2
+            if [ "${attempt}" -lt 3 ]; then sleep 10; fi
+          done
+          exit 1
+
+  release-assets:
+    needs: [wheels, sdist, smoke-wheels]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: binaries-*
+          merge-multiple: true
+          path: release-assets
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: release-assets
+      - name: Generate SHA256SUMS
+        working-directory: release-assets
+        shell: bash
         run: |
           set -euo pipefail
-          if draft=$(gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
-            --json isDraft --jq .isDraft 2>release-error); then
-            test "$draft" = true
-          elif grep -Eqi '404|not found' release-error; then
-            gh release create "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
-              --verify-tag --title "$RELEASE_TAG" --draft --generate-notes
-          else
-            cat release-error >&2
+          shopt -s nullglob
+          archives=(*)
+          if [ "${#archives[@]}" -eq 0 ]; then
+            echo "No release archives found to checksum" >&2
             exit 1
           fi
-          gh release upload "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" dist/* --clobber
+          sha256sum "${archives[@]}" > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: release-assets
+          path: release-assets/*
+          if-no-files-found: error
+
+  draft-github-release:
+    name: Draft GitHub release
+    needs:
+      - release-assets
+      - smoke-wheels
+      - preflight-release-guard
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          enable-cache: false
+          save-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Generate release asset attestation
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: |
+            release-assets/*.zip
+            release-assets/*.whl
+            release-assets/*.tar.gz
+      - name: Read release notes from changelog
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: uv run --script scripts/changelog.py extract "$RELEASE_TAG" > release-notes.md
+      - name: Ensure draft tag release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |-
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
+            echo "Ref '${GITHUB_REF}' is not a release tag (refs/tags/v*)." >&2
+            exit 1
+          fi
+          release_query_err_file="$(mktemp)"
+          if release_is_draft="$(gh release view "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft' 2>"${release_query_err_file}")"; then
+            :
+          elif grep -Eq '404|not[[:space:]]+found' "${release_query_err_file}"; then
+            gh release create "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" --verify-tag --title "${RELEASE_TAG}" --draft --notes-file release-notes.md
+            exit 0
+          else
+            echo "Failed to query release ${RELEASE_TAG}." >&2
+            cat "${release_query_err_file}" >&2
+            exit 1
+          fi
+          if [ "${release_is_draft}" = "true" ]; then
+            gh release edit "${RELEASE_TAG}" -R "${GITHUB_REPOSITORY}" --notes-file release-notes.md
+            echo "Reusing existing draft release ${RELEASE_TAG}."
+            exit 0
+          fi
+          echo "Published release ${RELEASE_TAG} already exists; refusing to continue." >&2
+          exit 1
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release upload "$RELEASE_TAG" -R "${GITHUB_REPOSITORY}" release-assets/* --clobber
 
   publish-crates:
-    needs: [version-check, draft-github-release]
+    needs: [version-check, draft-github-release, smoke-wheels, preflight-release-guard]
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -209,10 +395,15 @@ jobs:
         run: cargo publish --locked
 
   publish-pypi:
-    needs: [version-check, draft-github-release]
+    needs: [version-check, draft-github-release, smoke-wheels, preflight-release-guard]
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true))
     runs-on: ubuntu-latest
     permissions:
       id-token: write
+      contents: read
+      attestations: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
@@ -232,6 +423,11 @@ jobs:
             404) echo 'publish=true' >> "$GITHUB_OUTPUT" ;;
             *) echo "Unexpected PyPI HTTP status: $status" >&2; exit 1 ;;
           esac
+      - name: Generate artifact attestation
+        if: steps.pending.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: dist/*
       - name: Publish distributions
         if: steps.pending.outputs.publish == 'true'
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
@@ -242,6 +438,8 @@ jobs:
     name: Stage npm packages
     runs-on: ubuntu-latest
     needs:
+      - smoke-wheels
+      - preflight-release-guard
       - draft-github-release
       - wheels
     if: >-
@@ -252,15 +450,15 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: binaries-*
           merge-multiple: true
           path: release-assets
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           enable-cache: false
       - name: Build npm package directories
@@ -296,7 +494,7 @@ jobs:
           )"
           echo "value=${matrix_json}" >> "${GITHUB_OUTPUT}"
       - name: Upload packed npm packages
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: npm-packages
           path: dist/npm-tarballs/*.tgz
@@ -306,6 +504,8 @@ jobs:
     name: Publish npm platform package
     runs-on: ubuntu-latest
     needs:
+      - smoke-wheels
+      - preflight-release-guard
       - stage_npm_packages
     if: >-
       startsWith(github.ref, 'refs/tags/v') &&
@@ -318,14 +518,14 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '24'
           registry-url: https://registry.npmjs.org
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: npm-packages
           path: dist/npm-tarballs
@@ -413,6 +613,8 @@ jobs:
     name: Publish npm meta-package
     runs-on: ubuntu-latest
     needs:
+      - smoke-wheels
+      - preflight-release-guard
       - stage_npm_packages
       - publish_npm_platforms
     if: >-
@@ -422,14 +624,14 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '24'
           registry-url: https://registry.npmjs.org
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: npm-packages
           path: dist/npm-tarballs
@@ -509,3 +711,21 @@ jobs:
         env:
           TARBALL_PATH: ${{ steps.package_metadata.outputs.tarball_path }}
         run: npm publish --provenance --access public "$TARBALL_PATH"
+  finalize-github-release:
+    name: Finalize GitHub release
+    needs:
+      - publish-crates
+      - publish-pypi
+      - publish_npm_meta
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release edit "$RELEASE_TAG" -R "${GITHUB_REPOSITORY}" --draft=false

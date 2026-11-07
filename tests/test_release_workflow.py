@@ -1,0 +1,176 @@
+# /// script
+# requires-python = ">=3.15"
+# dependencies = ["pytest>=9", "pyyaml>=6"]
+# ///
+
+import os
+import shutil
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
+from typing import Final
+
+import pytest
+import yaml
+
+_ROOT: Final = Path(__file__).resolve().parents[1]
+_JOBS: Final = yaml.safe_load((_ROOT / ".github/workflows/release.yml").read_text())[
+    "jobs"
+]
+
+
+@pytest.mark.parametrize(
+    ("response", "status", "success"),
+    [
+        pytest.param("true", 0, True, id="draft"),
+        pytest.param("false", 0, False, id="published"),
+        pytest.param("release not found", 1, True, id="missing"),
+        pytest.param("HTTP 403 forbidden", 1, False, id="api error"),
+    ],
+)
+def test_preflight_release_guard(
+    tmp_path: Path, response: str, status: int, *, success: bool
+) -> None:
+    bash = shutil.which("bash")
+    assert bash is not None
+    step = _JOBS["preflight-release-guard"]["steps"][0]
+    stub = 'gh() { printf "%s\\n" "$RESPONSE" >&2; return "$STATUS"; }\n'
+    if status == 0:
+        stub = 'gh() { printf "%s\\n" "$RESPONSE"; return "$STATUS"; }\n'
+    result = subprocess.run(
+        [bash, "-c", stub + step["run"]],
+        cwd=tmp_path,
+        env=os.environ
+        | {
+            "RESPONSE": response,
+            "STATUS": str(status),
+            "RELEASE_TAG": "v0.1.1",
+            "GITHUB_REPOSITORY": "owenlamont/codestrand",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert (result.returncode == 0) is success, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "target", ["x86_64-unknown-linux-gnu", "aarch64-pc-windows-msvc"]
+)
+def test_binary_zip_compresses_and_preserves_executable_mode(
+    tmp_path: Path, target: str
+) -> None:
+    executable = "codestrand.exe" if "windows" in target else "codestrand"
+    (tmp_path / "dist").mkdir()
+    data = b"synthetic executable" * 1000
+    with zipfile.ZipFile(tmp_path / "dist/test.whl", "w") as wheel:
+        wheel.writestr(f"codestrand.data/scripts/{executable}", data)
+    for name in ("LICENSE", "LICENSE-APACHE", "assets/material/LICENSE.txt"):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("License fixture\n")
+    (step,) = (
+        step
+        for step in _JOBS["wheels"]["steps"]
+        if step.get("name") == "Package standalone binary from wheel"
+    )
+    source = step["run"].removeprefix("python - <<'PY'\n").removesuffix("PY\n")
+    script = tmp_path / "package.py"
+    script.write_text(source)
+    subprocess.run(
+        [sys.executable, str(script)],
+        cwd=tmp_path,
+        env=os.environ | {"TARGET": target},
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    with zipfile.ZipFile(tmp_path / f"binaries/codestrand-{target}.zip") as archive:
+        member = archive.getinfo(executable)
+        assert member.compress_type == zipfile.ZIP_DEFLATED
+        assert member.compress_size < member.file_size
+        assert member.external_attr >> 16 == 0o100755
+        assert archive.read(executable) == data
+
+
+def test_checksums_cover_every_asset_with_bare_filenames(tmp_path: Path) -> None:
+    bash = shutil.which("bash")
+    assert bash is not None
+    names = ["codestrand-0.1.1.tar.gz", "codestrand-linux.zip", "codestrand.whl"]
+    for name in names:
+        (tmp_path / name).write_bytes(name.encode())
+    (step,) = (
+        step
+        for step in _JOBS["release-assets"]["steps"]
+        if step.get("name") == "Generate SHA256SUMS"
+    )
+    subprocess.run(
+        [bash, "-c", step["run"]],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    lines = (tmp_path / "SHA256SUMS").read_text().splitlines()
+    assert [line.split(maxsplit=1)[1].removeprefix("*") for line in lines] == names
+    (tmp_path / names[0]).write_bytes(b"tampered")
+    result = subprocess.run(
+        [bash, "-c", "sha256sum --check SHA256SUMS"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+
+
+def test_smoke_matrix_covers_all_wheels_natively() -> None:
+    builds = _JOBS["wheels"]["strategy"]["matrix"]["include"]
+    smoke = _JOBS["smoke-wheels"]["strategy"]["matrix"]["include"]
+    assert {entry["target"] for entry in builds} == {entry["target"] for entry in smoke}
+    (arm,) = (entry for entry in smoke if entry["target"] == "aarch64-pc-windows-msvc")
+    assert arm["os"] == "windows-11-arm"
+
+
+def test_publication_requires_smoke_and_preflight_but_dry_builds_do_not() -> None:
+    for name in (
+        "draft-github-release",
+        "publish-crates",
+        "publish-pypi",
+        "stage_npm_packages",
+        "publish_npm_platforms",
+        "publish_npm_meta",
+    ):
+        assert {"smoke-wheels", "preflight-release-guard"} <= set(_JOBS[name]["needs"])
+    pending = ["release-assets"]
+    while pending:
+        name = pending.pop()
+        job = _JOBS[name]
+        assert "if" not in job
+        needs = job.get("needs", [])
+        pending.extend([needs] if isinstance(needs, str) else needs)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        name
+        for name, job in _JOBS.items()
+        if any(
+            job.get("permissions", {}).get(permission) == "write"
+            for permission in ("id-token", "contents")
+        )
+    ],
+)
+def test_write_permissions_require_publication_guard(name: str) -> None:
+    assert _JOBS[name].get("if") == (
+        "startsWith(github.ref, 'refs/tags/v') && "
+        "(github.event_name == 'push' || "
+        "(github.event_name == 'workflow_dispatch' && inputs.publish == true))"
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
