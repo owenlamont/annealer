@@ -1,5 +1,5 @@
 [files]
-extend-exclude = ["Cargo.lock", "assets/material/mapping.json"]
+extend-exclude = ["Cargo.lock", "THIRDPARTY.txt", "assets/material/mapping.json"]
 
 [default.extend-identifiers]
 PNGs = "PNGs"
