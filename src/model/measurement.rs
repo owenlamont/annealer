@@ -79,7 +79,7 @@ fn sampled_history_overlap() {
         "tick,commit,dirs,overlapping_pairs_per_dir,spread,edge_mean,edge_p95"
     )
     .unwrap();
-    let total = frames_for(LEAD_IN + count(events.len()) * 0.02 + TAIL, 60);
+    let total = frames_for(LEAD_IN + count(events.len()) * 0.02 + TAIL, 60).unwrap();
     let intervals = total.min(300);
     let mut next_event = 0;
     let mut sum = 0.0;

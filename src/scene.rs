@@ -375,7 +375,7 @@ fn preview_clock(world: &mut World, mut elapsed: Local<std::time::Duration>) {
     *elapsed += world.resource::<Time<Real>>().delta();
     let duration = world.resource::<Playback>().0.duration();
     let fps = world.resource::<Frame>().fps;
-    let frames = model::frames_for(duration, fps);
+    let frames = model::frames_for(duration, fps).unwrap_or(u32::MAX);
     let frame = model::preview_frame(*elapsed, fps);
     if frame >= frames {
         *elapsed = std::time::Duration::ZERO;

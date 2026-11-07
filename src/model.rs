@@ -138,7 +138,7 @@ pub(super) fn event_starts(events: &[Event], rate: f32, idle: f32) -> Vec<f32> {
                 let seconds =
                     u64::try_from(event.seconds.saturating_sub(previous)).unwrap_or(0);
                 let days = Duration::from_secs(seconds).as_secs_f32() / 86_400.0;
-                now += (days.max(0.1) * rate).max(tick_seconds()).min(idle);
+                now += (days.max(0.1) * rate).min(idle).max(tick_seconds());
             }
             previous = event.seconds;
             now
@@ -850,7 +850,7 @@ fn ground(point: Vec2) -> Vec3 {
     Vec3::new(point.x, 0.0, point.y)
 }
 
-fn tick_seconds() -> f32 {
+pub(super) fn tick_seconds() -> f32 {
     1.0 / count_u32(TICK_RATE)
 }
 
@@ -902,10 +902,16 @@ fn date(seconds: i64) -> String {
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "playback durations are positive and far below u32::MAX frames"
+    reason = "frame count is validated before conversion"
 )]
-pub(super) fn frames_for(duration: f32, fps: u16) -> u32 {
-    ((duration * f32::from(fps)).ceil() as u32).max(2)
+pub(super) fn frames_for(duration: f32, fps: u16) -> anyhow::Result<u32> {
+    let frames = (f64::from(duration) * f64::from(fps)).ceil();
+    anyhow::ensure!(
+        frames.is_finite() && frames >= 0.0 && frames <= f64::from(u32::MAX),
+        "whole playback exceeds the supported export range of {} frames; use --frames or reduce duration or fps",
+        u32::MAX
+    );
+    Ok((frames as u32).max(2))
 }
 
 pub(super) fn preview_frame(elapsed: Duration, fps: u16) -> u32 {
@@ -956,6 +962,54 @@ mod tests {
             );
         }
         assert_eq!(event_starts(&[], 1.0, 1.0), [] as [f32; 0]);
+    }
+
+    #[test]
+    fn minimum_idle_cap_starts_at_most_one_commit_per_tick() {
+        for idle in [tick_seconds(), 0.01] {
+            let events = vec![timeline::synthetic()[0].clone(); 300];
+            let mut sim = Simulation::new(
+                events,
+                &Options {
+                    max_idle_seconds: idle,
+                    ..Options::default()
+                },
+                &Theme::neon(),
+                &Mappings::default(),
+            );
+            for frame in 1..400 {
+                let previous = sim.state.next_event;
+                sim.advance_to(frame, 60);
+                assert!(sim.state.next_event - previous <= 1, "frame {frame}");
+            }
+            assert_eq!(sim.state.next_event, 300);
+        }
+    }
+
+    #[test]
+    fn whole_playback_frame_count_rejects_overflow() {
+        let mut events = vec![timeline::synthetic()[0].clone(); 300];
+        for (index, event) in events.iter_mut().enumerate() {
+            event.seconds = i64::try_from(index).unwrap() * 86_400;
+        }
+        let sim = Simulation::new(
+            events,
+            &Options {
+                seconds_per_day: 86_400.0,
+                max_idle_seconds: 86_400.0,
+                ..Options::default()
+            },
+            &Theme::neon(),
+            &Mappings::default(),
+        );
+        assert!(
+            frames_for(sim.duration(), 240)
+                .unwrap_err()
+                .to_string()
+                .contains("supported export range")
+        );
+        assert!(frames_for(sim.duration(), 30).is_ok());
+        assert_eq!(frames_for(1.0, 30).unwrap(), 30);
     }
 
     #[test]
@@ -1158,7 +1212,7 @@ mod tests {
                 &crate::contributors::Mappings::default(),
             );
             for _ in 0..2 {
-                for frame in 0..frames_for(sim.duration(), 60) {
+                for frame in 0..frames_for(sim.duration(), 60).unwrap() {
                     sim.advance_to(frame, 60);
                     assert_clearance(&sim);
                 }
@@ -1229,7 +1283,7 @@ mod tests {
             &theme,
             &crate::contributors::Mappings::default(),
         );
-        for frame in 0..frames_for(sim.duration(), 30) {
+        for frame in 0..frames_for(sim.duration(), 30).unwrap() {
             sim.advance_to(frame, 30);
             assert_clearance(&sim);
         }

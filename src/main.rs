@@ -85,7 +85,7 @@ struct Source {
     #[arg(long, default_value_t = 0.5, value_parser = positive_seconds)]
     seconds_per_day: f32,
     /// Maximum playback seconds between commits, compressing idle gaps.
-    #[arg(long, default_value_t = 1.0, value_parser = positive_seconds)]
+    #[arg(long, default_value_t = 1.0, value_parser = idle_seconds)]
     max_idle_seconds: f32,
 }
 
@@ -139,6 +139,16 @@ fn positive_seconds(value: &str) -> Result<f32, String> {
     }
 }
 
+fn idle_seconds(value: &str) -> Result<f32, String> {
+    let seconds = positive_seconds(value)?;
+    if seconds < model::tick_seconds() {
+        return Err(
+            "idle cap must be at least one simulation tick (1/60 second)".to_owned(),
+        );
+    }
+    Ok(seconds)
+}
+
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Some(Command::Inspect {
@@ -163,11 +173,28 @@ fn main() -> anyhow::Result<()> {
             let (simulation, title) = source.load().inspect_err(|_| {
                 let _ = std::fs::remove_dir(&directory);
             })?;
-            let frames =
-                frames.unwrap_or_else(|| model::frames_for(simulation.duration(), fps));
+            let frames = frames
+                .map_or_else(|| model::frames_for(simulation.duration(), fps), Ok)
+                .inspect_err(|_| {
+                    let _ = std::fs::remove_dir(&directory);
+                })?;
             export::run(&directory, simulation, title, frames, fps, frame_delay_ms)?;
         }
         None => Cli::command().print_help()?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimum_idle_cap_is_accepted_by_cli() {
+        let cap = model::tick_seconds().to_string();
+        assert!(
+            Cli::try_parse_from(["codestrand", "preview", "--max-idle-seconds", &cap])
+                .is_ok()
+        );
+    }
 }

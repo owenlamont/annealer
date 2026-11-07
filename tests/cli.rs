@@ -47,6 +47,8 @@ fn invalid_timing_is_rejected_before_creating_output() {
         ("--seconds-per-day", "86401"),
         ("--seconds-per-day", "inf"),
         ("--max-idle-seconds", "0"),
+        ("--max-idle-seconds", "0.01"),
+        ("--max-idle-seconds", "0.016666665"),
         ("--max-idle-seconds", "86401"),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_codestrand"))
