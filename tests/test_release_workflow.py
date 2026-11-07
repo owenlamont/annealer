@@ -206,5 +206,13 @@ def test_notices_ship_in_each_distribution() -> None:
     assert stage["run"] == "cp source/THIRDPARTY.txt release-assets/THIRDPARTY.txt"
 
 
+def test_embedded_font_notice_matches_locked_bevy() -> None:
+    lock = tomllib.loads((_ROOT / "Cargo.lock").read_text())
+    bevy_text = next(p for p in lock["package"] if p["name"] == "bevy_text")
+    template = (_ROOT / "about.hbs").read_text()
+    assert f"Bevy bevy_text {bevy_text['version']} default font" in template
+    assert "SIL OPEN FONT LICENSE Version 1.1" in template
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
