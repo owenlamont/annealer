@@ -363,16 +363,17 @@ fn heading(
 fn preview_clock(world: &mut World, mut elapsed: Local<std::time::Duration>) {
     let keys = world.resource::<ButtonInput<KeyCode>>();
     let factor = if keys.just_pressed(KeyCode::BracketRight) {
-        Some(0.5)
-    } else if keys.just_pressed(KeyCode::BracketLeft) {
         Some(2.0)
+    } else if keys.just_pressed(KeyCode::BracketLeft) {
+        Some(0.5)
     } else {
         None
     };
     if let Some(factor) = factor {
         world.resource_mut::<Playback>().0.change_rate(factor);
     }
-    *elapsed += world.resource::<Time<Real>>().delta();
+    let multiplier = world.resource::<Playback>().0.playback_multiplier();
+    *elapsed += world.resource::<Time<Real>>().delta().mul_f32(multiplier);
     let duration = world.resource::<Playback>().0.duration();
     let fps = world.resource::<Frame>().fps;
     let frames = model::frames_for(duration, fps).unwrap_or(u32::MAX);
@@ -1096,16 +1097,25 @@ mod tests {
             .press(KeyCode::BracketRight);
         app.world_mut()
             .resource_mut::<Time<Real>>()
+            .update_with_duration(std::time::Duration::ZERO);
+        app.update();
+        assert_eq!(app.world().resource::<Frame>().index, 45);
+        assert_eq!(app.world().resource::<Playback>().0.seconds(), seconds);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
             .update_with_duration(std::time::Duration::from_millis(100));
         app.update();
-        assert_eq!(app.world().resource::<Frame>().index, 51);
+        assert_eq!(app.world().resource::<Frame>().index, 57);
         assert_eq!(app.world().resource::<Playback>().0.seconds(), seconds);
         assert!(
             app.world()
                 .resource::<Playback>()
                 .0
                 .caption()
-                .contains("0.25 s/day")
+                .contains("2x")
         );
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
@@ -1125,7 +1135,7 @@ mod tests {
                 .resource::<Playback>()
                 .0
                 .caption()
-                .contains("0.25 s/day")
+                .contains("2x")
         );
     }
 

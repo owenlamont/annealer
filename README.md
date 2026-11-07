@@ -74,19 +74,18 @@ cargo run --locked --release -- export frames --repository /path/to/repository \
 Without `--repository`, the synthetic history plays, including a move between
 directories, deletions and a 65-file commit. `--start` lays out and settles earlier
 commits before playback; `--commits` limits what plays after it. Preview loops;
-Escape closes the window. The right bracket halves seconds per day; the left bracket
-doubles seconds per day, within 0.01–86400. Requested gaps stay between one simulation
-tick and the idle cap. Live rate changes preserve the current position in the plan and
-cannot compress gaps below their original planned durations, keeping fade reservations and
-directory speed limits intact. Rate transitions ease gradually to preserve acceleration
-bounds. The caption marks requests beyond the layout limit;
-slowing down and speeding back up within the limit remain available.
+Escape closes the window. `]` doubles the live playback multiplier; `[` halves
+it, from 0.125x to 8x. The caption shows the multiplier. Live playback advances the
+same canonical timeline faster or slower, like playing a movie at another speed.
+Commit times, layout, pulses, beams, avatar motion, settling and fades stay fixed
+in timeline seconds. Rate changes preserve the current timeline position; export
+always renders the launch timeline at 1x using explicit frame times.
 `--seconds-per-day` defaults to 0.5; timestamps within a day retain their spacing.
 Coincident, reversed or very close timestamps get a 0.05-second minimum gap
 (limited by the idle cap), preserving commit order. `--max-idle-seconds` defaults
 to 1 playback second: long gaps pause briefly without leaving the scene idle for
 minutes. Pulses, fades, avatar springs and layout relaxation use playback seconds,
-independently of calendar rate; changing speed reschedules only future commits.
+on the canonical timeline defined at launch.
 WASD pans in free-camera mode, right-drag orbits, and
 the scroll wheel zooms. Tab follows/cycles currently visible contributors; WASD
 returns to free mode. Follow also returns to free mode when the target fades out.

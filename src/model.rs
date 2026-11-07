@@ -123,14 +123,7 @@ pub(super) struct Simulation {
     offset: usize,
     total: usize,
     starts: Vec<f32>,
-    plan_starts: Vec<f32>,
-    clock_starts: Vec<f32>,
-    clock_plan_starts: Vec<f32>,
-    clock_rates: Vec<f32>,
-    clock_linear: bool,
-    seconds_per_day: f32,
-    rate_limited: bool,
-    max_idle_seconds: f32,
+    playback_multiplier: f32,
     initial: State,
     state: State,
     theme: Theme,
@@ -155,17 +148,18 @@ pub(super) fn event_starts(events: &[Event], rate: f32, idle: f32) -> Vec<f32> {
         .collect()
 }
 
-fn schedule_time(time: f32, current: &[f32], original: &[f32]) -> f32 {
-    let next = current.partition_point(|&start| start <= time);
+fn layout_time(time: f32, starts: &[f32]) -> f32 {
+    let next = starts.partition_point(|&start| start <= time);
     if next == 0 {
         return time;
     }
-    let previous = next - 1;
-    if next == current.len() {
-        return original[previous] + time - current[previous];
+    let previous = starts[next - 1];
+    // Preserve launch-timeline rounding so existing exports and quality reports stay identical.
+    if next == starts.len() {
+        return previous + time - previous;
     }
-    let fraction = (time - current[previous]) / (current[next] - current[previous]);
-    original[previous] + fraction * (original[next] - original[previous])
+    let gap = starts[next] - previous;
+    previous + (time - previous) / gap * gap
 }
 
 impl Simulation {
@@ -228,15 +222,8 @@ impl Simulation {
             events,
             offset: start,
             total,
-            plan_starts: starts.clone(),
-            clock_starts: starts.clone(),
-            clock_plan_starts: starts.clone(),
-            clock_rates: vec![1.0; starts.len()],
-            clock_linear: true,
             starts,
-            seconds_per_day: options.seconds_per_day,
-            rate_limited: false,
-            max_idle_seconds: options.max_idle_seconds,
+            playback_multiplier: 1.0,
             initial: state.clone(),
             state,
             theme: theme.clone(),
@@ -249,116 +236,15 @@ impl Simulation {
 
     pub(super) fn restart(&mut self) {
         self.state = self.initial.clone();
-        self.starts = self.plan_starts.clone();
-        self.clock_starts = self.starts.clone();
-        self.clock_plan_starts = self.plan_starts.clone();
-        self.clock_rates = vec![1.0; self.starts.len()];
-        self.clock_linear = true;
-        let mapped =
-            event_starts(&self.events, self.seconds_per_day, self.max_idle_seconds);
-        self.reschedule(&mapped);
     }
 
     pub(super) fn change_rate(&mut self, factor: f32) {
-        let rate = (self.seconds_per_day * factor).clamp(0.01, 86_400.0);
-        let previous =
-            event_starts(&self.events, self.seconds_per_day, self.max_idle_seconds);
-        let mapped = event_starts(&self.events, rate, self.max_idle_seconds);
-        if mapped == previous {
-            return;
-        }
-        self.reschedule(&mapped);
-        self.seconds_per_day = rate;
+        self.playback_multiplier =
+            (self.playback_multiplier * factor).clamp(0.125, 8.0);
     }
 
-    fn reschedule(&mut self, mapped: &[f32]) {
-        let next = self.state.next_event;
-        let now = self.seconds();
-        let plan_now = self.plan_seconds(now);
-        let clock_rate = self.plan_rate(now);
-        let acceleration = self.state.layout.clock_acceleration_limit();
-        let keep = self.clock_starts.partition_point(|&start| start < now);
-        self.clock_starts.truncate(keep);
-        self.clock_plan_starts.truncate(keep);
-        self.clock_rates.truncate(keep);
-        self.clock_starts.push(now);
-        self.clock_plan_starts.push(plan_now);
-        self.clock_rates.push(clock_rate);
-        self.rate_limited = false;
-        for index in next..self.starts.len() {
-            let rate = if index == 0 {
-                1.0
-            } else {
-                (self.plan_starts[index] - self.plan_starts[index - 1])
-                    / (mapped[index] - mapped[index - 1])
-            };
-            self.rate_limited |= rate > 1.0;
-            self.append_clock(self.plan_starts[index], rate.min(1.0), acceleration);
-            self.starts[index] =
-                *self.clock_starts.last().expect("event has a clock knot");
-        }
-        self.clock_linear = self
-            .clock_rates
-            .iter()
-            .all(|rate| rate.total_cmp(&1.0).is_eq());
-    }
-
-    fn append_clock(&mut self, end: f32, target: f32, acceleration: f32) {
-        let start = *self.clock_plan_starts.last().expect("clock has an anchor");
-        let time = *self.clock_starts.last().expect("clock has an anchor");
-        let rate = *self.clock_rates.last().expect("clock has an anchor");
-        let remaining = (end - start).max(0.0);
-        if rate.total_cmp(&target).is_eq() || acceleration == 0.0 {
-            self.clock_starts.push(time + remaining / rate);
-            self.clock_plan_starts.push(end);
-            self.clock_rates.push(rate);
-            return;
-        }
-        let transition = (target - rate).abs() / acceleration;
-        let distance = (rate + target) * transition / 2.0;
-        if distance < remaining {
-            self.clock_starts.push(time + transition);
-            self.clock_plan_starts.push(start + distance);
-            self.clock_rates.push(target);
-            self.append_clock(end, target, acceleration);
-            return;
-        }
-        let end_rate = (rate * rate
-            + 2.0 * acceleration * (target - rate).signum() * remaining)
-            .max(0.0)
-            .sqrt()
-            .clamp(rate.min(target), rate.max(target));
-        self.clock_starts
-            .push(time + 2.0 * remaining / (rate + end_rate));
-        self.clock_plan_starts.push(end);
-        self.clock_rates.push(end_rate);
-    }
-
-    fn plan_seconds(&self, time: f32) -> f32 {
-        // The plan's minimum durations preserve fade reservations and directory speed limits.
-        let next = self.clock_starts.partition_point(|&start| start <= time);
-        if next == 0 || self.clock_linear {
-            return schedule_time(time, &self.clock_starts, &self.clock_plan_starts);
-        }
-        let previous = next - 1;
-        let elapsed = time - self.clock_starts[previous];
-        let rate = self.clock_rates[previous].midpoint(self.plan_rate(time));
-        self.clock_plan_starts[previous] + rate * elapsed
-    }
-
-    fn plan_rate(&self, time: f32) -> f32 {
-        let next = self.clock_starts.partition_point(|&start| start <= time);
-        if next == 0 {
-            return 1.0;
-        }
-        let previous = next - 1;
-        if next == self.clock_starts.len() {
-            return self.clock_rates[previous];
-        }
-        let fraction = (time - self.clock_starts[previous])
-            / (self.clock_starts[next] - self.clock_starts[previous]);
-        self.clock_rates[previous]
-            + fraction * (self.clock_rates[next] - self.clock_rates[previous])
+    pub(super) fn playback_multiplier(&self) -> f32 {
+        self.playback_multiplier
     }
 
     pub(super) fn seconds(&self) -> f32 {
@@ -376,7 +262,7 @@ impl Simulation {
     }
 
     pub(crate) fn tick_layout(&mut self) {
-        let plan_time = self.plan_seconds(tick_time(self.state.tick + 1));
+        let plan_time = layout_time(tick_time(self.state.tick + 1), &self.starts);
         let state = &mut self.state;
         state.tick += 1;
         let now = tick_time(state.tick);
@@ -444,11 +330,6 @@ impl Simulation {
     }
 
     pub(super) fn caption(&self) -> String {
-        let limit = if self.rate_limited {
-            " requested (layout limit)"
-        } else {
-            ""
-        };
         let Some(event) = self
             .state
             .next_event
@@ -456,14 +337,14 @@ impl Simulation {
             .and_then(|index| self.events.get(index))
         else {
             return format!(
-                "{} / {} commits | {:.2} s/day{limit}",
+                "{} / {} commits | {}x",
                 self.commit(),
                 self.total(),
-                self.seconds_per_day
+                self.playback_multiplier
             );
         };
         format!(
-            "{}   |   {}   |   commit {} / {}   |   {:.2} s/day{limit}",
+            "{}   |   {}   |   commit {} / {}   |   {}x",
             date(event.seconds),
             event
                 .contributor
@@ -472,7 +353,7 @@ impl Simulation {
                 .name,
             self.commit(),
             self.total,
-            self.seconds_per_day
+            self.playback_multiplier
         )
     }
 
@@ -1253,7 +1134,7 @@ mod tests {
         assert!(sim.starts.windows(2).all(|pair| pair[1] > pair[0]));
         sim.change_rate(2.0);
         assert!((sim.starts[1] - 1.0).abs() < 0.0001);
-        assert!(sim.caption().contains("0.50 s/day"));
+        assert!(sim.caption().contains("1x"));
         sim.restart();
         assert_eq!(sim.starts, event_starts(&sim.events, 0.5, 1.0));
         assert_eq!(sim.state.next_event, 0);
@@ -1274,30 +1155,17 @@ mod tests {
     }
 
     #[test]
-    fn rate_controls_stop_at_saturated_gaps() {
-        for (seconds, factor) in [(0, 0.5), (86_400, 2.0)] {
-            let mut events = timeline::synthetic();
-            events.truncate(2);
-            events[0].seconds = 0;
-            events[1].seconds = seconds;
-            let mut sim = Simulation::new(
-                events,
-                &Options::default(),
-                &Theme::neon(),
-                &Mappings::default(),
-            );
-            sim.change_rate(factor);
-            assert_eq!(sim.seconds_per_day, 0.5 * factor);
+    fn rate_controls_stop_at_multiplier_bounds() {
+        for (factor, bound) in [(0.5, 0.125), (2.0, 8.0)] {
+            let mut sim = simulation();
+            let starts = sim.starts.clone();
             for _ in 0..32 {
                 sim.change_rate(factor);
             }
-            let rate = sim.seconds_per_day;
-            let starts = sim.starts.clone();
-            sim.change_rate(factor);
-            assert_eq!(sim.seconds_per_day, rate);
+            assert_eq!(sim.playback_multiplier(), bound);
             assert_eq!(sim.starts, starts);
             sim.change_rate(1.0 / factor);
-            assert_ne!(sim.seconds_per_day, rate);
+            assert_eq!(sim.playback_multiplier(), bound / factor);
         }
     }
 

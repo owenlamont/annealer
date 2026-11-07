@@ -38,20 +38,62 @@ fn simulation(events: Vec<Event>, options: &Options) -> Simulation {
     Simulation::new(events, options, &Theme::neon(), &Mappings::default())
 }
 
-#[test]
-fn mid_gap_rate_change_preserves_plan_time() {
-    let mut sim = simulation(growth(), &Options::default());
-    sim.advance_to(585, 60);
-    let now = sim.seconds();
-    let before = sim.plan_seconds(now);
-    sim.change_rate(0.5);
-    let after = sim.plan_seconds(now);
-    assert!((before - after).abs() < 0.0001, "{before} -> {after}");
+fn snapshot(sim: &Simulation) -> String {
+    format!(
+        "{:?}",
+        (
+            sim.state.tick,
+            sim.state.next_event,
+            sim.layout().dirs().collect::<Vec<_>>(),
+            sim.layout().files().collect::<Vec<_>>(),
+            &sim.state.avatars,
+            &sim.state.pulses,
+            sim.view(),
+        )
+    )
 }
 
 #[test]
-fn accelerated_playback_bounds_retained_directory_speed() {
-    for factor in [1.0, 0.125] {
+fn mid_gap_rate_changes_preserve_state_and_schedule() {
+    let mut sim = simulation(growth(), &Options::default());
+    sim.advance_to(585, 60);
+    let before = snapshot(&sim);
+    let starts = sim.starts.clone();
+    let duration = sim.duration();
+    for factor in [0.125, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 0.5] {
+        sim.change_rate(factor);
+        assert_eq!(snapshot(&sim), before);
+        assert_eq!(sim.starts, starts);
+        assert_eq!(sim.duration(), duration);
+    }
+}
+
+#[test]
+fn every_multiplier_samples_the_canonical_timeline() {
+    for multiplier in [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0] {
+        let mut sim = simulation(growth(), &Options::default());
+        let mut canonical = simulation(growth(), &Options::default());
+        sim.change_rate(multiplier);
+        let mut elapsed = Duration::ZERO;
+        for _ in 0..frames_for(sim.duration() / multiplier, 8).unwrap() {
+            elapsed += Duration::from_millis(125).mul_f32(sim.playback_multiplier());
+            let frame = preview_frame(elapsed, 60);
+            sim.advance_to(frame, 60);
+            canonical.advance_to(frame, 60);
+            assert_eq!(snapshot(&sim), snapshot(&canonical));
+        }
+        sim.advance_to(585, 60);
+        canonical.advance_to(585, 60);
+        assert_eq!(snapshot(&sim), snapshot(&canonical));
+        sim.restart();
+        assert_eq!(sim.seconds(), 0.0);
+        assert_eq!(sim.playback_multiplier(), multiplier);
+    }
+}
+
+#[test]
+fn multipliers_preserve_canonical_directory_speed() {
+    for factor in [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0] {
         let mut sim = simulation(growth(), &Options::default());
         sim.change_rate(factor);
         let mut previous = BTreeMap::new();
@@ -75,7 +117,7 @@ fn accelerated_playback_bounds_retained_directory_speed() {
 }
 
 #[test]
-fn accelerated_playback_reserves_fading_directory_space() {
+fn multipliers_preserve_fading_directory_space() {
     let mut first = changes("a", 100, &Kind::Added);
     first.extend(changes("b", 1, &Kind::Added));
     let events = vec![
@@ -89,7 +131,7 @@ fn accelerated_playback_reserves_fading_directory_space() {
         max_idle_seconds: 200.0,
         ..Options::default()
     };
-    for (factor, change_tick) in [(1.0, 0), (1.0 / 1024.0, 0), (2.0, 6036)] {
+    for (factor, change_tick) in [(1.0, 0), (0.125, 0), (8.0, 6036)] {
         let mut sim = simulation(events.clone(), &options);
         for _ in 0..change_tick {
             sim.tick_layout();
@@ -128,98 +170,4 @@ fn accelerated_playback_reserves_fading_directory_space() {
                 .all(|(_, file)| !file.path.starts_with("a/"))
         );
     }
-}
-
-#[test]
-fn repeated_rate_changes_preserve_clock_history_and_playback_second_bounds() {
-    let mut sim = simulation(growth(), &Options::default());
-    sim.advance_to(585, 60);
-    for factor in [4.0, 0.5, 0.5, 0.5, 8.0, 0.125] {
-        let now = sim.seconds();
-        let history: Vec<_> = (0..=585)
-            .map(|tick| sim.plan_seconds(tick_time(tick)))
-            .collect();
-        let before = sim.plan_seconds(now);
-        sim.change_rate(factor);
-        assert!((sim.plan_seconds(now) - before).abs() < 0.0001);
-        for (tick, &expected) in history.iter().enumerate() {
-            let time = tick_time(u64::try_from(tick).unwrap());
-            assert!((sim.plan_seconds(time) - expected).abs() < 0.0001);
-        }
-        for (playback, plan) in sim
-            .clock_starts
-            .windows(2)
-            .zip(sim.clock_plan_starts.windows(2))
-        {
-            let elapsed = playback[1] - playback[0];
-            let advance = plan[1] - plan[0];
-            assert!(elapsed > 0.0);
-            assert!(advance >= 0.0 && advance <= elapsed + 0.0001);
-        }
-        sim.advance_to(586, 60);
-        let first = sim.layout().forecast();
-        sim.advance_to(0, 60);
-        sim.advance_to(586, 60);
-        assert_eq!(sim.layout().forecast(), first);
-    }
-    sim.restart();
-    assert_eq!(sim.seconds(), 0.0);
-    assert_eq!(sim.plan_seconds(0.0), 0.0);
-    assert_eq!(&sim.clock_starts[1..], sim.starts);
-    assert_eq!(&sim.clock_plan_starts[1..], sim.plan_starts);
-}
-
-#[test]
-fn slowing_then_speeding_changes_pacing_within_the_plan_limit() {
-    let mut sim = simulation(growth(), &Options::default());
-    sim.advance_to(45, 60);
-    sim.change_rate(2.0);
-    assert!(sim.starts[1] > 1.0 && sim.starts[1] < 1.25);
-    let before = sim.plan_seconds(sim.seconds());
-    sim.advance_to(46, 60);
-    let advance = sim.plan_seconds(sim.seconds()) - before;
-    assert!(advance < tick_seconds() && advance > tick_seconds() / 2.0);
-    let anchor = sim.plan_seconds(sim.seconds());
-    let rate = sim.plan_rate(sim.seconds());
-    sim.change_rate(0.5);
-    assert_eq!(sim.plan_seconds(sim.seconds()), anchor);
-    assert_eq!(sim.plan_rate(sim.seconds()), rate);
-    sim.advance_to(47, 60);
-    assert!(sim.plan_rate(sim.seconds()) > rate);
-    sim.change_rate(0.5);
-    assert!(sim.caption().contains("requested (layout limit)"));
-}
-
-#[test]
-fn live_rate_transitions_bound_directory_acceleration() {
-    let mut sim = simulation(growth(), &Options::default());
-    let mut previous: BTreeMap<usize, Vec2> = BTreeMap::new();
-    let mut velocities: BTreeMap<usize, Vec2> = BTreeMap::new();
-    let mut worst = 0.0_f32;
-    for tick in 0..2400 {
-        if tick % 60 == 0 {
-            let rate = sim.plan_rate(sim.seconds());
-            sim.change_rate(if tick % 120 == 0 { 2.0 } else { 0.5 });
-            assert_eq!(sim.plan_rate(sim.seconds()), rate);
-        }
-        sim.tick_layout();
-        let mut current = BTreeMap::new();
-        let mut next_velocities = BTreeMap::new();
-        for (id, dir) in sim.layout().dirs() {
-            if let Some(position) = previous.get(&id) {
-                let velocity = (dir.position - *position) / tick_seconds();
-                assert!(velocity.length() <= 3.001);
-                if let Some(previous_velocity) = velocities.get(&id) {
-                    worst = worst
-                        .max((velocity - *previous_velocity).length() / tick_seconds());
-                }
-                next_velocities.insert(id, velocity);
-            }
-            current.insert(id, dir.position);
-        }
-        previous = current;
-        velocities = next_velocities;
-    }
-    eprintln!("live-rate maximum retained-directory acceleration {worst}");
-    assert!(worst <= 48.01, "{worst} units/s²");
 }

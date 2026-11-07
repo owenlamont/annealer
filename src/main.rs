@@ -50,7 +50,7 @@ enum Command {
         #[arg(long, default_value = "HEAD")]
         revision: String,
     },
-    /// Play history in a loop; brackets change speed, Escape closes it.
+    /// Play history in a loop; [ halves and ] doubles live speed (0.125x–8x). Escape closes it.
     Preview {
         #[command(flatten)]
         source: Source,
@@ -89,10 +89,10 @@ struct Source {
     /// Commits to play after the start; defaults to the rest of the history.
     #[arg(long)]
     commits: Option<usize>,
-    /// Playback seconds per calendar day.
+    /// Canonical timeline seconds per calendar day; live speed keys leave the timeline fixed.
     #[arg(long, default_value_t = 0.5, value_parser = positive_seconds)]
     seconds_per_day: f32,
-    /// Maximum playback seconds between commits, compressing idle gaps.
+    /// Maximum canonical timeline seconds between commits, compressing idle gaps.
     #[arg(long, default_value_t = 1.0, value_parser = idle_seconds)]
     max_idle_seconds: f32,
 }
