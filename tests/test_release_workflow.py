@@ -95,10 +95,10 @@ def test_binary_zip_compresses_and_preserves_executable_mode(
         assert archive.read(executable) == data
 
 
-def test_checksums_cover_every_archive_with_bare_filenames(tmp_path: Path) -> None:
+def test_checksums_cover_every_asset_with_bare_filenames(tmp_path: Path) -> None:
     bash = shutil.which("bash")
     assert bash is not None
-    names = ["codestrand-linux.zip", "codestrand-windows.zip"]
+    names = ["codestrand-0.1.1.tar.gz", "codestrand-linux.zip", "codestrand.whl"]
     for name in names:
         (tmp_path / name).write_bytes(name.encode())
     (step,) = (
@@ -151,6 +151,25 @@ def test_publication_requires_smoke_and_preflight_but_dry_builds_do_not() -> Non
         assert "if" not in job
         needs = job.get("needs", [])
         pending.extend([needs] if isinstance(needs, str) else needs)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        name
+        for name, job in _JOBS.items()
+        if any(
+            job.get("permissions", {}).get(permission) == "write"
+            for permission in ("id-token", "contents")
+        )
+    ],
+)
+def test_write_permissions_require_publication_guard(name: str) -> None:
+    assert _JOBS[name].get("if") == (
+        "startsWith(github.ref, 'refs/tags/v') && "
+        "(github.event_name == 'push' || "
+        "(github.event_name == 'workflow_dispatch' && inputs.publish == true))"
+    )
 
 
 if __name__ == "__main__":
