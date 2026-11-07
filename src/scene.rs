@@ -1118,7 +1118,7 @@ mod tests {
         assert_eq!(app.world().resource::<Playback>().0.commit(), 0);
         assert_eq!(
             app.world().resource::<Playback>().0.scheduled_starts(),
-            model::event_starts(&crate::timeline::synthetic(), 0.25, 1.0)
+            model::event_starts(&crate::timeline::synthetic(), 0.5, 1.0)
         );
         assert!(
             app.world()

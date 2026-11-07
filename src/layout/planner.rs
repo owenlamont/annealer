@@ -556,6 +556,24 @@ impl Layout {
         self.plan.seconds
     }
 
+    pub(crate) fn clock_acceleration_limit(&self) -> f32 {
+        let mut speed = 0.0_f32;
+        let mut acceleration = 0.0_f32;
+        for row in &*self.plan.samples {
+            for points in row.windows(2) {
+                speed = speed.max(points[0].distance(points[1]) / self.plan.step);
+            }
+            for points in row.windows(3) {
+                acceleration = acceleration.max(
+                    (points[0] - 2.0 * points[1] + points[2]).length()
+                        / self.plan.step.powi(2),
+                );
+            }
+        }
+        // Time warping adds at most speed * clock acceleration to the spline's acceleration.
+        ((MAX_ACCELERATION - acceleration).max(0.0) / speed.max(1.0)).min(1.0)
+    }
+
     pub(crate) fn plan_time(&mut self, time: f32) {
         self.plan.time = time;
         self.plan.origin = time;

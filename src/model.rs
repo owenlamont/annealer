@@ -14,6 +14,8 @@ use crate::{
 
 #[cfg(test)]
 mod measurement;
+#[cfg(test)]
+mod pacing_tests;
 pub(crate) mod quality;
 
 pub(super) const TICK_RATE: u32 = 60;
@@ -122,7 +124,12 @@ pub(super) struct Simulation {
     total: usize,
     starts: Vec<f32>,
     plan_starts: Vec<f32>,
+    clock_starts: Vec<f32>,
+    clock_plan_starts: Vec<f32>,
+    clock_rates: Vec<f32>,
+    clock_linear: bool,
     seconds_per_day: f32,
+    rate_limited: bool,
     max_idle_seconds: f32,
     initial: State,
     state: State,
@@ -222,8 +229,13 @@ impl Simulation {
             offset: start,
             total,
             plan_starts: starts.clone(),
+            clock_starts: starts.clone(),
+            clock_plan_starts: starts.clone(),
+            clock_rates: vec![1.0; starts.len()],
+            clock_linear: true,
             starts,
             seconds_per_day: options.seconds_per_day,
+            rate_limited: false,
             max_idle_seconds: options.max_idle_seconds,
             initial: state.clone(),
             state,
@@ -237,8 +249,14 @@ impl Simulation {
 
     pub(super) fn restart(&mut self) {
         self.state = self.initial.clone();
-        self.starts =
+        self.starts = self.plan_starts.clone();
+        self.clock_starts = self.starts.clone();
+        self.clock_plan_starts = self.plan_starts.clone();
+        self.clock_rates = vec![1.0; self.starts.len()];
+        self.clock_linear = true;
+        let mapped =
             event_starts(&self.events, self.seconds_per_day, self.max_idle_seconds);
+        self.reschedule(&mapped);
     }
 
     pub(super) fn change_rate(&mut self, factor: f32) {
@@ -249,21 +267,98 @@ impl Simulation {
         if mapped == previous {
             return;
         }
-        let next = self.state.next_event;
-        if next > 0 && next < self.starts.len() {
-            let now = self.seconds();
-            let fraction = ((self.starts[next] - now)
-                / (previous[next] - previous[next - 1]))
-                .clamp(0.0, 1.0);
-            self.starts[next] = now + (mapped[next] - mapped[next - 1]) * fraction;
-            for index in next + 1..self.starts.len() {
-                self.starts[index] =
-                    self.starts[index - 1] + mapped[index] - mapped[index - 1];
-            }
-        } else if next == 0 {
-            self.starts = mapped;
-        }
+        self.reschedule(&mapped);
         self.seconds_per_day = rate;
+    }
+
+    fn reschedule(&mut self, mapped: &[f32]) {
+        let next = self.state.next_event;
+        let now = self.seconds();
+        let plan_now = self.plan_seconds(now);
+        let clock_rate = self.plan_rate(now);
+        let acceleration = self.state.layout.clock_acceleration_limit();
+        let keep = self.clock_starts.partition_point(|&start| start < now);
+        self.clock_starts.truncate(keep);
+        self.clock_plan_starts.truncate(keep);
+        self.clock_rates.truncate(keep);
+        self.clock_starts.push(now);
+        self.clock_plan_starts.push(plan_now);
+        self.clock_rates.push(clock_rate);
+        self.rate_limited = false;
+        for index in next..self.starts.len() {
+            let rate = if index == 0 {
+                1.0
+            } else {
+                (self.plan_starts[index] - self.plan_starts[index - 1])
+                    / (mapped[index] - mapped[index - 1])
+            };
+            self.rate_limited |= rate > 1.0;
+            self.append_clock(self.plan_starts[index], rate.min(1.0), acceleration);
+            self.starts[index] =
+                *self.clock_starts.last().expect("event has a clock knot");
+        }
+        self.clock_linear = self
+            .clock_rates
+            .iter()
+            .all(|rate| rate.total_cmp(&1.0).is_eq());
+    }
+
+    fn append_clock(&mut self, end: f32, target: f32, acceleration: f32) {
+        let start = *self.clock_plan_starts.last().expect("clock has an anchor");
+        let time = *self.clock_starts.last().expect("clock has an anchor");
+        let rate = *self.clock_rates.last().expect("clock has an anchor");
+        let remaining = (end - start).max(0.0);
+        if rate.total_cmp(&target).is_eq() || acceleration == 0.0 {
+            self.clock_starts.push(time + remaining / rate);
+            self.clock_plan_starts.push(end);
+            self.clock_rates.push(rate);
+            return;
+        }
+        let transition = (target - rate).abs() / acceleration;
+        let distance = (rate + target) * transition / 2.0;
+        if distance < remaining {
+            self.clock_starts.push(time + transition);
+            self.clock_plan_starts.push(start + distance);
+            self.clock_rates.push(target);
+            self.append_clock(end, target, acceleration);
+            return;
+        }
+        let end_rate = (rate * rate
+            + 2.0 * acceleration * (target - rate).signum() * remaining)
+            .max(0.0)
+            .sqrt()
+            .clamp(rate.min(target), rate.max(target));
+        self.clock_starts
+            .push(time + 2.0 * remaining / (rate + end_rate));
+        self.clock_plan_starts.push(end);
+        self.clock_rates.push(end_rate);
+    }
+
+    fn plan_seconds(&self, time: f32) -> f32 {
+        // The plan's minimum durations preserve fade reservations and directory speed limits.
+        let next = self.clock_starts.partition_point(|&start| start <= time);
+        if next == 0 || self.clock_linear {
+            return schedule_time(time, &self.clock_starts, &self.clock_plan_starts);
+        }
+        let previous = next - 1;
+        let elapsed = time - self.clock_starts[previous];
+        let rate = self.clock_rates[previous].midpoint(self.plan_rate(time));
+        self.clock_plan_starts[previous] + rate * elapsed
+    }
+
+    fn plan_rate(&self, time: f32) -> f32 {
+        let next = self.clock_starts.partition_point(|&start| start <= time);
+        if next == 0 {
+            return 1.0;
+        }
+        let previous = next - 1;
+        if next == self.clock_starts.len() {
+            return self.clock_rates[previous];
+        }
+        let fraction = (time - self.clock_starts[previous])
+            / (self.clock_starts[next] - self.clock_starts[previous]);
+        self.clock_rates[previous]
+            + fraction * (self.clock_rates[next] - self.clock_rates[previous])
     }
 
     pub(super) fn seconds(&self) -> f32 {
@@ -281,6 +376,7 @@ impl Simulation {
     }
 
     pub(crate) fn tick_layout(&mut self) {
+        let plan_time = self.plan_seconds(tick_time(self.state.tick + 1));
         let state = &mut self.state;
         state.tick += 1;
         let now = tick_time(state.tick);
@@ -293,7 +389,6 @@ impl Simulation {
             state.next_event += 1;
         }
         let dt = tick_seconds();
-        let plan_time = schedule_time(now, &self.starts, &self.plan_starts);
         state.layout.sample_plan(plan_time, dt);
         state.layout.step(dt);
     }
@@ -349,6 +444,11 @@ impl Simulation {
     }
 
     pub(super) fn caption(&self) -> String {
+        let limit = if self.rate_limited {
+            " requested (layout limit)"
+        } else {
+            ""
+        };
         let Some(event) = self
             .state
             .next_event
@@ -356,14 +456,14 @@ impl Simulation {
             .and_then(|index| self.events.get(index))
         else {
             return format!(
-                "{} / {} commits | {:.2} s/day",
+                "{} / {} commits | {:.2} s/day{limit}",
                 self.commit(),
                 self.total(),
                 self.seconds_per_day
             );
         };
         format!(
-            "{}   |   {}   |   commit {} / {}   |   {:.2} s/day",
+            "{}   |   {}   |   commit {} / {}   |   {:.2} s/day{limit}",
             date(event.seconds),
             event
                 .contributor
@@ -1149,7 +1249,7 @@ mod tests {
         assert_eq!(sim.state.avatars[0].position, position);
         assert_eq!(sim.state.pulses[0].end, pulse_end);
         assert_eq!(sim.starts[0], LEAD_IN);
-        assert_eq!(sim.starts[1], 0.875);
+        assert_eq!(sim.starts[1], 1.0);
         assert!(sim.starts.windows(2).all(|pair| pair[1] > pair[0]));
         sim.change_rate(2.0);
         assert!((sim.starts[1] - 1.0).abs() < 0.0001);
@@ -1197,7 +1297,7 @@ mod tests {
             assert_eq!(sim.seconds_per_day, rate);
             assert_eq!(sim.starts, starts);
             sim.change_rate(1.0 / factor);
-            assert_ne!(sim.starts, starts);
+            assert_ne!(sim.seconds_per_day, rate);
         }
     }
 
