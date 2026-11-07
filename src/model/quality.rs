@@ -1,0 +1,390 @@
+//! CPU-only, tick-sampled quality measurements; definitions travel with every report.
+
+use std::{collections::BTreeMap, io::Write};
+
+use serde::Serialize;
+
+use super::{Simulation, Vec2, Vec3, ground, project, view_direction};
+
+/// Overlap is an unordered strict disc-intersection count, including hierarchy edges.
+/// Frame counts and pair-frame sums use every explicit 60 Hz tick, including lead/tail.
+/// Visibility measures four-cardinal-point disc spans with fade-scaled radius 0.27,
+/// divided by viewport height through the simulation's smoothed 16:9 fit camera.
+/// Mean size weights visible file-frame observations; the minimum includes fades.
+/// Extent use divides the projected directory-cardinal-point AABB area by viewport area.
+/// Movement sums retained-ID tick distances; births/reactivation placement are free,
+/// while growth-induced motion of existing IDs and rename motion count.
+/// Per-commit intervals start at the commit tick and end before the next commit tick.
+/// Net movement sums lengths of accumulated displacement vectors per identity, so
+/// backtracking cancels; path length and maximum individual tick jumps do not cancel.
+const DEFINITIONS: &str = "Frames include t=0 and every 1/60 second through ceil(duration*60). Overlap counts unordered pairs of live directory discs with centre distance strictly less than summed radii (tangency excluded, parent/child and root included). Hotspots count pair-frames and record first/last commit, not necessarily a continuous interval. Movement is summed Euclidean ground-plane path length between consecutive ticks for IDs present in both snapshots; new entries and reactivated directories have no placement cost, retained IDs across renames do. Existing entries displaced by growth DO count. Per-commit movement belongs to the latest applied commit, including its idle interval and final tail; commit 0 is lead-in. Maximum jump is the largest individual retained-ID tick displacement. Visibility uses visible files (presence>0), a planar disc radius 0.27 times presence, and the actual smoothed fit camera at 16:9, 45 degree vertical FOV: diameter is the maximum horizontal/vertical span of four projected cardinal points as a fraction of viewport height, not pixels or glyph ink area. Extent use is the AABB of four projected cardinal points per live directory disc area divided by viewport area (unclipped, can exceed 1 during camera lag). Mean diameter weights file-frame observations; mean extent weights all frames; empty visibility is null. Net displacement sums magnitudes of retained-ID displacement vectors over the whole animation or each commit interval; unlike path length, backtracking cancels. Directory reactivation placement is omitted from both. Distances are world units; no occlusion or label readability is measured.";
+
+#[derive(Default, Serialize)]
+struct Movement {
+    files: f64,
+    directories: f64,
+    max_file_jump: f64,
+    max_directory_jump: f64,
+}
+
+/// Birth and reactivation placement is excluded by intersecting consecutive live IDs.
+fn displacement<K: Ord>(
+    before: &BTreeMap<K, Vec2>,
+    after: &BTreeMap<K, Vec2>,
+) -> (f64, f64) {
+    after
+        .iter()
+        .filter_map(|(id, position)| {
+            before
+                .get(id)
+                .map(|previous| f64::from(position.distance(*previous)))
+        })
+        .fold((0.0, 0.0), |(sum, max), distance| {
+            (sum + distance, max.max(distance))
+        })
+}
+
+fn overlaps(a: (Vec2, f32), b: (Vec2, f32)) -> bool {
+    a.0.distance_squared(b.0) < (a.1 + b.1).powi(2)
+}
+
+#[derive(Default, Serialize)]
+struct Hotspot {
+    frames: u32,
+    first_commit: usize,
+    last_commit: usize,
+}
+
+#[derive(Serialize)]
+struct Sample {
+    frame: u32,
+    commit: usize,
+    overlap_pairs: u32,
+    mean_diameter: Option<f64>,
+    min_diameter: Option<f64>,
+    extent_use: f64,
+    movement: Movement,
+}
+
+fn visibility(simulation: &Simulation) -> (f64, u32, Option<f64>, f64) {
+    let (focus, distance) = simulation.view();
+    let eye = focus + view_direction() * distance;
+    let mut sum = 0.0;
+    let mut count = 0;
+    let mut minimum = f64::INFINITY;
+    for (_, file) in simulation
+        .layout()
+        .files()
+        .filter(|(_, file)| file.presence > 0.0)
+    {
+        let centre = ground(file.position);
+        let radius = 0.27 * file.presence;
+        let points = [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z]
+            .map(|side| centre + side * radius);
+        let diameter = projected_extent(eye, focus, &points);
+        let size = f64::from((diameter.x * 16.0 / 9.0).max(diameter.y) * 0.5);
+        sum += size;
+        minimum = minimum.min(size);
+        count += 1;
+    }
+    let points: Vec<_> = simulation
+        .layout()
+        .dirs()
+        .flat_map(|(_, dir)| {
+            let centre = ground(dir.position);
+            [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z]
+                .map(|side| centre + side * dir.radius())
+        })
+        .collect();
+    let extent = projected_extent(eye, focus, &points);
+    (
+        sum,
+        count,
+        (count > 0).then_some(minimum),
+        f64::from(extent.x * extent.y * 0.25),
+    )
+}
+
+fn projected_extent(eye: Vec3, focus: Vec3, points: &[Vec3]) -> Vec2 {
+    let (low, high) = project(eye, focus, points).flatten().fold(
+        (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)),
+        |(low, high), point| (low.min(point), high.max(point)),
+    );
+    (high - low).max(Vec2::ZERO)
+}
+
+/// Writes definitions, per-tick records, and a summary as JSON Lines without GPU startup.
+/// Runtime is deliberately excluded so identical inputs produce identical report bytes.
+pub(crate) fn run(
+    simulation: &mut Simulation,
+    writer: &mut impl Write,
+) -> anyhow::Result<()> {
+    serde_json::to_writer(
+        &mut *writer,
+        &serde_json::json!({"definitions": DEFINITIONS}),
+    )?;
+    writeln!(writer)?;
+    let frames = super::frames_for(simulation.duration(), 60)?;
+    let mut previous_files = BTreeMap::new();
+    let mut previous_dirs = BTreeMap::new();
+    let mut hotspots: BTreeMap<String, Hotspot> = BTreeMap::new();
+    let mut commits: BTreeMap<usize, Movement> = BTreeMap::new();
+    let mut total = Movement::default();
+    let mut net = NetMovement::default();
+    let mut interval = NetMovement::default();
+    let mut interval_commit = simulation.commit();
+    let mut per_commit_net = BTreeMap::new();
+    let mut overlapped_frames = 0;
+    let mut worst_pairs = 0;
+    let mut pair_frames = 0_u64;
+    let mut diameter_sum = 0.0;
+    let mut observations = 0.0;
+    let mut minimum = f64::INFINITY;
+    let mut extent_sum = 0.0;
+    for frame in 0..=frames {
+        simulation.advance_to(frame, 60);
+        progress(frame, frames, simulation.commit());
+        let commit = simulation.commit();
+        let layout = simulation.layout();
+        let files = layout
+            .files()
+            .map(|(id, file)| (id, file.position))
+            .collect();
+        let dirs = layout.dirs().map(|(id, dir)| (id, dir.position)).collect();
+        let (file_distance, file_jump) = displacement(&previous_files, &files);
+        let (dir_distance, dir_jump) = displacement(&previous_dirs, &dirs);
+        if commit != interval_commit {
+            per_commit_net.insert(interval_commit, interval.measure());
+            interval = NetMovement::default();
+            interval_commit = commit;
+        }
+        for vectors in [&mut net, &mut interval] {
+            add_vectors(&mut vectors.files, &previous_files, &files);
+            add_vectors(&mut vectors.directories, &previous_dirs, &dirs);
+        }
+        previous_files = files;
+        previous_dirs = dirs;
+        let movement = Movement {
+            files: file_distance,
+            directories: dir_distance,
+            max_file_jump: file_jump,
+            max_directory_jump: dir_jump,
+        };
+        for accumulator in [&mut total, commits.entry(commit).or_default()] {
+            accumulator.files += file_distance;
+            accumulator.directories += dir_distance;
+            accumulator.max_file_jump = accumulator.max_file_jump.max(file_jump);
+            accumulator.max_directory_jump =
+                accumulator.max_directory_jump.max(dir_jump);
+        }
+        let pairs = count_overlaps(layout, commit, &mut hotspots);
+        overlapped_frames += u32::from(pairs > 0);
+        worst_pairs = worst_pairs.max(pairs);
+        pair_frames += u64::from(pairs);
+        let (sum, count, min, extent) = visibility(simulation);
+        diameter_sum += sum;
+        observations += f64::from(count);
+        minimum = minimum.min(min.unwrap_or(f64::INFINITY));
+        extent_sum += extent;
+        let record = Sample {
+            frame,
+            commit,
+            overlap_pairs: pairs,
+            mean_diameter: (count > 0).then(|| sum / f64::from(count)),
+            min_diameter: min,
+            extent_use: extent,
+            movement,
+        };
+        serde_json::to_writer(&mut *writer, &record)?;
+        writeln!(writer)?;
+    }
+    per_commit_net.insert(interval_commit, interval.measure());
+    serde_json::to_writer(
+        &mut *writer,
+        &serde_json::json!({
+            "summary": {
+                "frames": frames + 1, "overlapped_frames": overlapped_frames,
+                "worst_pairs": worst_pairs, "pair_frames": pair_frames,
+                "mean_diameter": (observations > 0.0).then(|| diameter_sum / observations),
+                "min_diameter": minimum.is_finite().then_some(minimum),
+                "mean_extent_use": extent_sum / f64::from(frames + 1),
+                "movement": total, "per_commit": commits, "hotspots": hotspots,
+                "net_file_directory_displacement": net.measure(),
+                "per_commit_net_file_directory_displacement": per_commit_net
+            }
+        }),
+    )?;
+    writeln!(writer)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlap_excludes_tangency_and_separation() {
+        assert!(overlaps((Vec2::ZERO, 1.0), (Vec2::X, 1.0)));
+        assert!(!overlaps((Vec2::ZERO, 1.0), (Vec2::X * 2.0, 1.0)));
+        assert!(!overlaps((Vec2::ZERO, 1.0), (Vec2::X * 3.0, 1.0)));
+    }
+
+    #[test]
+    fn movement_uses_identity_excludes_births_and_counts_known_path() {
+        let before = BTreeMap::from([(1, Vec2::ZERO), (2, Vec2::X)]);
+        assert_eq!(displacement(&before, &before), (0.0, 0.0));
+        let after = BTreeMap::from([(1, Vec2::new(3.0, 4.0)), (3, Vec2::splat(100.0))]);
+        assert_eq!(displacement(&before, &after), (5.0, 5.0));
+    }
+
+    #[test]
+    fn pair_count_counts_each_unordered_pair_once() {
+        let discs = [
+            (0, Vec2::ZERO, 1.0),
+            (1, Vec2::X, 1.0),
+            (2, Vec2::X * 5.0, 1.0),
+        ];
+        assert_eq!(overlap_pairs(&discs).collect::<Vec<_>>(), vec![(0, 1)]);
+        assert_eq!(
+            overlap_pairs(&[(0, Vec2::ZERO, 1.0), (1, Vec2::X * 2.0, 1.0)]).count(),
+            0
+        );
+        assert_eq!(overlap_pairs(&[]).count(), 0);
+    }
+    #[test]
+    fn net_displacement_cancels_backtracking() {
+        let origin = BTreeMap::from([(1, Vec2::ZERO)]);
+        let middle = BTreeMap::from([(1, Vec2::new(3.0, 4.0))]);
+        let mut vectors = BTreeMap::new();
+        add_vectors(&mut vectors, &origin, &middle);
+        assert_eq!(vectors[&1].length(), 5.0);
+        add_vectors(&mut vectors, &middle, &origin);
+        assert_eq!(vectors[&1], Vec2::ZERO);
+    }
+
+    #[test]
+    fn static_inline_history_has_zero_movement_and_repeats_byte_for_byte() {
+        use crate::{contributors::Mappings, model::Options, theme::Theme, timeline};
+        let events = vec![timeline::Event {
+            author: timeline::Identity {
+                name: b"Ada".to_vec(),
+                email: Vec::new(),
+            },
+            contributor: None,
+            seconds: 0,
+            changes: vec![timeline::FileChange {
+                path: "a.rs".to_owned(),
+                kind: timeline::Kind::Added,
+                insertions: 1,
+                removals: 0,
+            }],
+        }];
+        let mut simulation = Simulation::new(
+            events,
+            &Options::default(),
+            &Theme::neon(),
+            &Mappings::default(),
+        );
+        let mut first = Vec::new();
+        run(&mut simulation, &mut first).unwrap();
+        simulation.restart();
+        let mut second = Vec::new();
+        run(&mut simulation, &mut second).unwrap();
+        assert_eq!(first, second);
+        let text = String::from_utf8(first).unwrap();
+        let record: serde_json::Value =
+            serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        let summary = &record["summary"];
+        assert_eq!(summary["overlapped_frames"], 0);
+        assert_eq!(summary["movement"]["files"], 0.0);
+        assert_eq!(summary["movement"]["directories"], 0.0);
+        assert_eq!(
+            summary["net_file_directory_displacement"],
+            serde_json::json!([0.0, 0.0])
+        );
+        assert!(summary["mean_diameter"].as_f64().unwrap() > 0.0);
+        assert!(summary["min_diameter"].as_f64().unwrap() > 0.0);
+    }
+    #[test]
+    fn projection_has_known_size() {
+        let extent =
+            projected_extent(Vec3::Z * 10.0, Vec3::ZERO, &[Vec3::NEG_X, Vec3::X]);
+        let expected = 2.0 / (10.0 * std::f32::consts::FRAC_PI_8.tan() * 16.0 / 9.0);
+        assert!((extent.x - expected).abs() < 1e-6);
+        assert_eq!(extent.y, 0.0);
+    }
+}
+
+#[derive(Default)]
+struct NetMovement {
+    files: BTreeMap<u64, Vec2>,
+    directories: BTreeMap<usize, Vec2>,
+}
+
+impl NetMovement {
+    fn measure(&self) -> (f64, f64) {
+        (
+            self.files
+                .values()
+                .map(|delta| f64::from(delta.length()))
+                .sum(),
+            self.directories
+                .values()
+                .map(|delta| f64::from(delta.length()))
+                .sum(),
+        )
+    }
+}
+
+fn add_vectors<K: Ord + Copy>(
+    vectors: &mut BTreeMap<K, Vec2>,
+    before: &BTreeMap<K, Vec2>,
+    after: &BTreeMap<K, Vec2>,
+) {
+    for (id, position) in after {
+        if let Some(previous) = before.get(id) {
+            *vectors.entry(*id).or_default() += *position - *previous;
+        }
+    }
+}
+
+fn count_overlaps(
+    layout: &crate::layout::Layout,
+    commit: usize,
+    hotspots: &mut BTreeMap<String, Hotspot>,
+) -> u32 {
+    let discs: Vec<_> = layout
+        .dirs()
+        .map(|(id, dir)| (id, dir.position, dir.radius()))
+        .collect();
+    let mut pairs = 0;
+    for (a, b) in overlap_pairs(&discs) {
+        pairs += 1;
+        let a = layout.dir(a);
+        let b = layout.dir(b);
+        let key = serde_json::json!([a.path, b.path]).to_string();
+        let hotspot = hotspots.entry(key).or_insert(Hotspot {
+            first_commit: commit,
+            ..Hotspot::default()
+        });
+        hotspot.frames += 1;
+        hotspot.last_commit = commit;
+    }
+    pairs
+}
+
+fn progress(frame: u32, frames: u32, commit: usize) {
+    if frame.is_multiple_of(600) {
+        eprintln!("quality frame={frame}/{frames} commit={commit}");
+    }
+}
+
+fn overlap_pairs(
+    discs: &[(usize, Vec2, f32)],
+) -> impl Iterator<Item = (usize, usize)> + '_ {
+    discs.iter().enumerate().flat_map(move |(index, a)| {
+        discs[index + 1..]
+            .iter()
+            .filter_map(move |b| overlaps((a.1, a.2), (b.1, b.2)).then_some((a.0, b.0)))
+    })
+}

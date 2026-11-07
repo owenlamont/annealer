@@ -36,6 +36,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Measure existing layout quality without starting a renderer.
+    #[command(hide = true)]
+    LayoutQuality {
+        #[command(flatten)]
+        source: Source,
+        output: PathBuf,
+    },
     /// Inspect local history as JSON; merge changes compare against the first parent.
     Inspect {
         repository: PathBuf,
@@ -62,7 +69,7 @@ enum Command {
     },
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, serde::Serialize)]
 struct Source {
     /// Local repository to play; a built-in synthetic history plays when omitted.
     #[arg(long)]
@@ -151,6 +158,28 @@ fn idle_seconds(value: &str) -> Result<f32, String> {
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
+        Some(Command::LayoutQuality { source, output }) => {
+            let started = std::time::Instant::now();
+            let (mut simulation, _) = source.load()?;
+            eprintln!("load_plan_seconds={:.6}", started.elapsed().as_secs_f64());
+            let started = std::time::Instant::now();
+            let mut writer = std::io::BufWriter::new(std::fs::File::create(output)?);
+            serde_json::to_writer(
+                &mut writer,
+                &serde_json::json!({
+                    "schema": 1, "source": source,
+                    "history_events": simulation.total(),
+                    "duration_seconds": simulation.duration(), "tick_rate": model::TICK_RATE,
+                }),
+            )?;
+            std::io::Write::write_all(&mut writer, b"\n")?;
+            model::quality::run(&mut simulation, &mut writer)?;
+            std::io::Write::flush(&mut writer)?;
+            eprintln!(
+                "replay_report_seconds={:.6}",
+                started.elapsed().as_secs_f64()
+            );
+        }
         Some(Command::Inspect {
             repository,
             revision,

@@ -14,6 +14,7 @@ use crate::{
 
 #[cfg(test)]
 mod measurement;
+pub(crate) mod quality;
 
 pub(super) const TICK_RATE: u32 = 60;
 pub(super) const PREVIEW_FPS: u16 = 30;
