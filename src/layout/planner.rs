@@ -601,6 +601,7 @@ mod tests {
                 email: Vec::new(),
             },
             contributor: None,
+            commit: String::new(),
             changes: changes
                 .iter()
                 .map(|(path, kind)| FileChange {
@@ -980,6 +981,7 @@ mod probes {
                 email: Vec::new(),
             },
             contributor: None,
+            commit: String::new(),
             changes: changes
                 .into_iter()
                 .map(|(path, kind)| FileChange {
@@ -1165,6 +1167,7 @@ mod rate_probe {
                     email: Vec::new(),
                 },
                 contributor: None,
+                commit: String::new(),
                 changes: paths
                     .into_iter()
                     .map(|path| FileChange {

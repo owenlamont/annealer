@@ -9,6 +9,7 @@ fn event(day: i64, changes: Vec<FileChange>) -> Event {
             email: Vec::new(),
         },
         contributor: None,
+        commit: String::new(),
         changes,
     }
 }

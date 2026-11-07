@@ -70,6 +70,7 @@ struct Pulse {
 pub(super) struct Avatar {
     pub key: Key,
     pub name: String,
+    pub portrait: Option<std::sync::Arc<crate::avatars::Portrait>>,
     pub position: Vec3,
     velocity: Vec3,
     target: Vec3,
@@ -174,7 +175,9 @@ impl Simulation {
         theme: &Theme,
         mappings: &Mappings,
     ) -> Self {
-        mappings.apply(&mut events);
+        if events.iter().any(|event| event.contributor.is_none()) {
+            mappings.apply(&mut events);
+        }
         let start = options.start.min(events.len());
         let end = options
             .commits
@@ -526,6 +529,7 @@ impl State {
         self.avatars.push(Avatar {
             key: contributor.key.clone(),
             name: contributor.name.clone(),
+            portrait: contributor.portrait.clone(),
             position: self.focus() + Vec3::Y * MIN_AVATAR_HEIGHT,
             velocity: Vec3::ZERO,
             target: self.focus(),
@@ -1217,6 +1221,7 @@ mod tests {
                     email: name.as_bytes().to_vec(),
                 },
                 contributor: None,
+                commit: String::new(),
                 seconds: 0,
                 changes: vec![timeline::FileChange {
                     path: name.to_owned(),

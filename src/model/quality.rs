@@ -419,6 +419,7 @@ mod tests {
                 email: Vec::new(),
             },
             contributor: None,
+            commit: String::new(),
             seconds: 0,
             changes: vec![timeline::FileChange {
                 path: "a.rs".to_owned(),

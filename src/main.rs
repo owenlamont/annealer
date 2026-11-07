@@ -12,6 +12,7 @@
     reason = "Bevy's platform backends require incompatible transitive crate versions"
 )]
 
+mod avatars;
 mod cache;
 mod camera;
 mod contributors;
@@ -77,12 +78,15 @@ struct Source {
     repository: Option<PathBuf>,
     #[arg(long, default_value = "HEAD")]
     revision: String,
-    /// Import playback history without reading or writing the user cache.
+    /// Skip history and avatar cache reads and writes.
     #[arg(long)]
     no_cache: bool,
     /// Contributor TOML file; defaults to the Codestrand user configuration directory.
     #[arg(long)]
     contributors: Option<PathBuf>,
+    /// Fetch contributor avatars before playback; sends account requests and email hashes.
+    #[arg(long)]
+    fetch_avatars: bool,
     /// Commits laid out and settled before playback begins.
     #[arg(long, default_value_t = 0)]
     start: usize,
@@ -112,7 +116,21 @@ impl Source {
 
     fn load(&self) -> anyhow::Result<(model::Simulation, String)> {
         let mappings = contributors::load(self.contributors.as_deref())?;
-        let events = self.events(cache::root().as_deref())?;
+        let mut events = self.events(cache::root().as_deref())?;
+        mappings.apply(&mut events);
+        let remote = self.repository.as_deref().and_then(avatars::repository);
+        let fetch = self.fetch_avatars && self.repository.is_some();
+        let mut resolver = avatars::Resolver::new(
+            fetch.then(avatars::Http::new),
+            cache::root().filter(|_| !self.no_cache),
+            fetch,
+            avatars::now(),
+        );
+        let start = self.start.min(events.len());
+        let end = self.commits.map_or(events.len(), |count| {
+            start.saturating_add(count).min(events.len())
+        });
+        resolver.resolve(&mut events[start..end], remote.as_deref());
         let (events, title) = match &self.repository {
             Some(path) => {
                 let name = path

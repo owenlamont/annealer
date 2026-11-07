@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Write};
 use crate::history::{BlobDiff, ChangeKind, Commit, History};
 
 // Bump when the snapshot format, history import policies or timeline conversion change.
-pub(super) const CACHE_VERSION: u32 = 2;
+pub(super) const CACHE_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) enum Kind {
@@ -30,6 +30,7 @@ pub(super) struct Identity {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Event {
     pub author: Identity,
+    pub commit: String,
     #[serde(skip)]
     pub contributor: Option<crate::contributors::Contributor>,
     pub seconds: i64,
@@ -63,6 +64,7 @@ pub(super) fn from_history(history: &History) -> Vec<Event> {
                 email: commit.author.email.clone(),
             },
             contributor: None,
+            commit: commit.id.clone(),
             seconds: commit.author.seconds,
             changes: commit
                 .changes
@@ -117,19 +119,23 @@ fn path(bytes: &[u8]) -> String {
     text
 }
 
+fn synthetic_event(author: &str, changes: Vec<FileChange>, index: usize) -> Event {
+    Event {
+        author: Identity {
+            name: author.as_bytes().to_vec(),
+            email: format!("{author}@example.invalid").into_bytes(),
+        },
+        contributor: None,
+        commit: String::new(),
+        seconds: 1_700_000_000 + 86_400 * i64::try_from(index).unwrap_or(0),
+        changes,
+    }
+}
 /// A small scripted history exercising growth, moves, deletion and a crowded commit.
 pub(super) fn synthetic() -> Vec<Event> {
     let mut events = Vec::new();
     let mut push = |author: &str, changes: Vec<FileChange>| {
-        let seconds = 1_700_000_000 + 86_400 * i64::try_from(events.len()).unwrap_or(0);
-        let name = author.as_bytes().to_vec();
-        let email = format!("{author}@example.invalid").into_bytes();
-        events.push(Event {
-            author: Identity { name, email },
-            contributor: None,
-            seconds,
-            changes,
-        });
+        events.push(synthetic_event(author, changes, events.len()));
     };
     let add = |path: &str, lines| change(path, Kind::Added, lines, 0);
     let edit =

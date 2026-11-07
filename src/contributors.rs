@@ -19,6 +19,14 @@ pub(super) enum Key {
 pub(super) struct Contributor {
     pub key: Key,
     pub name: String,
+    pub accounts: Accounts,
+    pub portrait: Option<std::sync::Arc<crate::avatars::Portrait>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct Accounts {
+    pub github: Option<String>,
+    pub gravatar: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -51,6 +59,8 @@ struct Config {
 struct Entry {
     name: String,
     emails: Vec<String>,
+    github: Option<String>,
+    gravatar: Option<String>,
 }
 
 pub(super) fn load(explicit: Option<&Path>) -> Result<Mappings, Error> {
@@ -91,6 +101,11 @@ impl Mappings {
                 let contributor = Contributor {
                     key: Key::Config(index),
                     name: entry.name.clone(),
+                    accounts: Accounts {
+                        github: entry.github.clone(),
+                        gravatar: entry.gravatar.clone(),
+                    },
+                    portrait: None,
                 };
                 if emails.insert(key, contributor).is_some() {
                     return Err(Error::Duplicate {
@@ -118,6 +133,8 @@ impl Mappings {
                     let key = unlisted_key(event);
                     Contributor {
                         name: names[&key].clone(),
+                        accounts: Accounts::default(),
+                        portrait: None,
                         key,
                     }
                 }));
@@ -151,6 +168,7 @@ mod tests {
                     email: email.as_bytes().to_vec(),
                 },
                 contributor: None,
+                commit: String::new(),
                 seconds: 0,
                 changes: vec![timeline::FileChange {
                     path: email.to_owned(),
@@ -176,6 +194,32 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn optional_platform_accounts_parse_and_follow_email_aliases() {
+        let mappings = Mappings::parse(
+            r#"
+[[contributor]]
+name = "Owen"
+emails = ["one@example.invalid", "two@example.invalid"]
+github = "owenlamont"
+gravatar = "avatar@example.invalid"
+"#,
+            Path::new("contributors.toml"),
+        )
+        .unwrap();
+        let mut events = events(&[
+            ("One", "one@example.invalid"),
+            ("Two", "two@example.invalid"),
+        ]);
+        mappings.apply(&mut events);
+        let contributor = events[0].contributor.as_ref().unwrap();
+        assert_eq!(contributor.accounts.github.as_deref(), Some("owenlamont"));
+        assert_eq!(
+            contributor.accounts.gravatar.as_deref(),
+            Some("avatar@example.invalid")
+        );
+        assert_eq!(events[0].contributor, events[1].contributor);
+    }
     #[test]
     fn two_emails_share_an_avatar_and_colour_identity() {
         let mappings = Mappings::parse(

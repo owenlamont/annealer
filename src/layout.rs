@@ -115,6 +115,7 @@ impl Layout {
                 email: Vec::new(),
             },
             contributor: None,
+            commit: String::new(),
             changes: paths
                 .iter()
                 .map(|path| (*path).to_owned())
