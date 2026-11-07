@@ -206,6 +206,7 @@ mod tests {
                     email: email.as_bytes().to_vec(),
                 },
                 contributor: None,
+                commit: String::new(),
                 seconds: 0,
                 changes: Vec::new(),
             })

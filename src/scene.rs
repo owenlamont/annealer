@@ -51,6 +51,9 @@ struct Label;
 struct Caption;
 
 #[derive(Component)]
+struct PortraitDisc;
+
+#[derive(Component)]
 struct FileVisual {
     membership: Entity,
     glyph: Entity,
@@ -64,6 +67,7 @@ struct Palette {
     theme: Theme,
     cube: Handle<Mesh>,
     sphere: Handle<Mesh>,
+    disc: Handle<Mesh>,
     beam: Handle<Mesh>,
     edge: Handle<StandardMaterial>,
     grid: Handle<StandardMaterial>,
@@ -84,6 +88,7 @@ impl Palette {
         let mut meshes = world.resource_mut::<Assets<Mesh>>();
         let cube = meshes.add(Cuboid::default());
         let sphere = meshes.add(Sphere::new(theme.avatar_radius));
+        let disc = meshes.add(Circle::new(theme.avatar_radius));
         let beam = meshes.add(Cylinder::new(0.035, 1.0));
         let glyph_mesh = meshes.add(Rectangle::default());
         let membership_mesh = meshes.add(Annulus::new(
@@ -142,6 +147,7 @@ impl Palette {
             theme: theme.clone(),
             cube,
             sphere,
+            disc,
             beam,
             edge,
             grid,
@@ -212,6 +218,10 @@ fn app(simulation: Simulation, title: String) -> App {
         .init_resource::<Pools>()
         .add_systems(Startup, setup)
         .add_systems(Update, animate)
+        .add_systems(
+            PostUpdate,
+            face_portraits.before(bevy::transform::TransformSystems::Propagate),
+        )
         .add_systems(
             PostUpdate,
             labels
@@ -776,6 +786,49 @@ fn set_material(
     }
 }
 
+fn attach_portrait(
+    world: &mut World,
+    palette: &Palette,
+    entity: Entity,
+    avatar: &model::Avatar,
+) {
+    if let Some(portrait) = &avatar.portrait {
+        let mut image = Image::new_uninit(
+            Extent3d {
+                width: 128,
+                height: 128,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+        );
+        image.data = Some(portrait.pixels.clone());
+        image.sampler = ImageSampler::linear();
+        let texture = world.resource_mut::<Assets<Image>>().add(image);
+        let material =
+            world
+                .resource_mut::<Assets<StandardMaterial>>()
+                .add(StandardMaterial {
+                    base_color_texture: Some(texture),
+                    unlit: true,
+                    alpha_mode: AlphaMode::Mask(0.5),
+                    ..default()
+                });
+        let face = world
+            .spawn((
+                Mesh3d(palette.disc.clone()),
+                MeshMaterial3d(material),
+                Transform::from_xyz(0.0, 0.0, 0.002).with_scale(Vec3::splat(0.9)),
+            ))
+            .id();
+        world
+            .entity_mut(entity)
+            .insert(PortraitDisc)
+            .add_child(face);
+    }
+}
+
 fn sync_activity(
     world: &mut World,
     palette: &Palette,
@@ -787,12 +840,17 @@ fn sync_activity(
         let index = pools.avatars.len();
         let entity = world
             .spawn((
-                Mesh3d(palette.sphere.clone()),
+                Mesh3d(if avatars[index].portrait.is_some() {
+                    palette.disc.clone()
+                } else {
+                    palette.sphere.clone()
+                }),
                 MeshMaterial3d(palette.avatars[index % palette.avatars.len()].clone()),
                 Transform::default(),
                 Visibility::Hidden,
             ))
             .id();
+        attach_portrait(world, palette, entity, &avatars[index]);
         pools.avatars.push(entity);
     }
     for (index, &entity) in pools.avatars.iter().enumerate() {
@@ -1059,6 +1117,22 @@ fn labels(world: &mut World) {
         && text.0 != caption
     {
         text.0 = caption;
+    }
+}
+
+fn face_portraits(world: &mut World) {
+    let rotation = world
+        .query_filtered::<&Transform, With<SceneCamera>>()
+        .single(world)
+        .map(|transform| transform.rotation)
+        .ok();
+    if let Some(rotation) = rotation {
+        for mut transform in world
+            .query_filtered::<&mut Transform, With<PortraitDisc>>()
+            .iter_mut(world)
+        {
+            transform.rotation = rotation;
+        }
     }
 }
 
@@ -1412,6 +1486,7 @@ mod tests {
                     email: b"ada@example.invalid".to_vec(),
                 },
                 contributor: None,
+                commit: String::new(),
                 seconds: 86_400 * i64::try_from(index).expect("small fixture"),
                 changes: vec![FileChange {
                     path: (*path).to_owned(),
@@ -1490,6 +1565,7 @@ mod tests {
                     email: b"ada@example.invalid".to_vec(),
                 },
                 contributor: None,
+                commit: String::new(),
                 seconds: 0,
                 changes: vec![FileChange {
                     path: "alpha/a.rs".to_owned(),
@@ -1504,6 +1580,7 @@ mod tests {
                     email: b"ada@example.invalid".to_vec(),
                 },
                 contributor: None,
+                commit: String::new(),
                 seconds: 86_400,
                 changes: vec![FileChange {
                     path: "beta/a.rs".to_owned(),
