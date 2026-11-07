@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Final
 
 _ROOT: Final = Path(__file__).resolve().parents[1]
-_LICENSES: Final = ("LICENSE", "LICENSE-APACHE", "assets/material/LICENSE.txt")
+_LICENSES: Final = (
+    "LICENSE",
+    "LICENSE-APACHE",
+    "assets/material/LICENSE.txt",
+    "THIRDPARTY.txt",
+)
 
 
 def _write_json(path: Path, data: object) -> None:

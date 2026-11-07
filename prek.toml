@@ -25,7 +25,7 @@ hooks = [
     name = "Release workflow tests",
     entry = "uv run --script tests/test_release_workflow.py",
     language = "system",
-    files = '^(tests/test_release_workflow\.py|\.github/workflows/release\.yml)$',
+    files = '^(tests/test_release_workflow\.py|\.github/workflows/release\.yml|about\.hbs|Cargo\.lock)$',
     pass_filenames = false,
   },
   {

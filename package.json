@@ -20,7 +20,8 @@
     "README.md",
     "LICENSE",
     "LICENSE-APACHE",
-    "assets/material/LICENSE.txt"
+    "assets/material/LICENSE.txt",
+    "THIRDPARTY.txt"
   ],
   "homepage": "https://github.com/owenlamont/codestrand#readme",
   "keywords": [

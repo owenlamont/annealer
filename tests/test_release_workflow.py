@@ -3,10 +3,12 @@
 # dependencies = ["pytest>=9", "pyyaml>=6"]
 # ///
 
+import json
 import os
 import shutil
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 from typing import Final
@@ -67,10 +69,15 @@ def test_binary_zip_compresses_and_preserves_executable_mode(
     data = b"synthetic executable" * 1000
     with zipfile.ZipFile(tmp_path / "dist/test.whl", "w") as wheel:
         wheel.writestr(f"codestrand.data/scripts/{executable}", data)
-    for name in ("LICENSE", "LICENSE-APACHE", "assets/material/LICENSE.txt"):
+    for name in (
+        "LICENSE",
+        "LICENSE-APACHE",
+        "assets/material/LICENSE.txt",
+        "THIRDPARTY.txt",
+    ):
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("License fixture\n")
+        path.write_text("License fixture\n", newline="\n")
     (step,) = (
         step
         for step in _JOBS["wheels"]["steps"]
@@ -93,12 +100,18 @@ def test_binary_zip_compresses_and_preserves_executable_mode(
         assert member.compress_size < member.file_size
         assert member.external_attr >> 16 == 0o100755
         assert archive.read(executable) == data
+        assert archive.read("THIRDPARTY.txt") == b"License fixture\n"
 
 
 def test_checksums_cover_every_asset_with_bare_filenames(tmp_path: Path) -> None:
     bash = shutil.which("bash")
     assert bash is not None
-    names = ["codestrand-0.1.1.tar.gz", "codestrand-linux.zip", "codestrand.whl"]
+    names = [
+        "THIRDPARTY.txt",
+        "codestrand-0.1.1.tar.gz",
+        "codestrand-linux.zip",
+        "codestrand.whl",
+    ]
     for name in names:
         (tmp_path / name).write_bytes(name.encode())
     (step,) = (
@@ -170,6 +183,50 @@ def test_write_permissions_require_publication_guard(name: str) -> None:
         "(github.event_name == 'push' || "
         "(github.event_name == 'workflow_dispatch' && inputs.publish == true))"
     )
+
+
+def test_notices_ship_in_each_distribution() -> None:
+    cargo = tomllib.loads((_ROOT / "Cargo.toml").read_text())
+    python = tomllib.loads((_ROOT / "pyproject.toml").read_text())
+    npm = json.loads((_ROOT / "package.json").read_text())
+    assert "/THIRDPARTY.txt" in cargo["package"]["include"]
+    assert "THIRDPARTY.txt" in python["project"]["license-files"]
+    assert "THIRDPARTY.txt" in npm["files"]
+    verify = next(
+        step
+        for step in _JOBS["version-check"]["steps"]
+        if step.get("name") == "Verify third-party notices"
+    )
+    assert verify["run"] == "uv run --script scripts/licenses.py --check"
+    hooks = tomllib.loads((_ROOT / "prek.toml").read_text())
+    assert all(
+        "scripts/licenses.py" not in hook.get("entry", "")
+        for repo in hooks["repos"]
+        for hook in repo["hooks"]
+    )
+    stage = next(
+        step
+        for step in _JOBS["release-assets"]["steps"]
+        if step.get("name") == "Stage third-party notices"
+    )
+    assert stage["run"] == "cp source/THIRDPARTY.txt release-assets/THIRDPARTY.txt"
+
+
+def test_embedded_font_notice_matches_locked_bevy() -> None:
+    lock = tomllib.loads((_ROOT / "Cargo.lock").read_text())
+    bevy_text = next(p for p in lock["package"] if p["name"] == "bevy_text")
+    template = (_ROOT / "about.hbs").read_text()
+    assert f"Bevy bevy_text {bevy_text['version']} default font" in template
+    assert (
+        f"https://github.com/bevyengine/bevy/blob/v{bevy_text['version']}/"
+        "assets/fonts/FiraMono-LICENSE"
+    ) in template
+    assert "SIL OPEN FONT LICENSE Version 1.1" in template
+
+
+def test_notices_contain_no_html_entities() -> None:
+    notices = (_ROOT / "THIRDPARTY.txt").read_text()
+    assert all(entity not in notices for entity in ("&amp;", "&quot;", "&#"))
 
 
 if __name__ == "__main__":
