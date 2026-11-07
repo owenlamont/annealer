@@ -174,7 +174,8 @@ misses, are cached.
 `GH_TOKEN` or `GITHUB_TOKEN`, when present, authenticates only GitHub API requests.
 Public repositories work without a token (GitHub's unauthenticated limit is 60 requests
 per hour); private repositories need a token with repository access. Rate limits and
-network failures leave playback available.
+network failures leave playback available. HTTPS uses Rustls with ring and the operating
+system trust store; no bundled certificate roots are used on Linux, macOS or Windows.
 
 If GitHub supplies no image, Gravatar is tried with a SHA-256 hash of the trimmed, lowercase
 email and `d=404`, so a missing Gravatar never becomes a generic placeholder. Email
