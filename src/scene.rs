@@ -477,7 +477,7 @@ fn sync_files(
         let position = Vec3::new(file.position.x, 0.0, file.position.y);
         if let Some(mut transform) = world.get_mut::<Transform>(entity) {
             transform.translation = position;
-            transform.scale = Vec3::splat(file.presence.max(0.001));
+            transform.scale = Vec3::splat(file.visible_presence(layout.dir(file.dir)));
         }
         let visual = world
             .get::<FileVisual>(entity)
@@ -1311,7 +1311,15 @@ mod tests {
 
     #[test]
     fn subtree_slots_include_retired_directories_and_survive_reappearance() {
-        let mut layout = Layout::planned(&[]);
+        let mut layout = Layout::planned_paths(
+            &[
+                "early/deep/a.rs",
+                "later/a.rs",
+                "later/deeper/b.rs",
+                "new/a.rs",
+            ],
+            0,
+        );
         layout.add("early/deep/a.rs", 0.0, 0);
         layout.settle(120, 1.0 / 60.0);
         layout.remove("early/deep/a.rs", 0.0, 0);
@@ -1319,7 +1327,7 @@ mod tests {
         layout.add("later/a.rs", 0.0, 0);
         let mut hues = DirectoryHues::default();
         hues.sync(&layout);
-        assert_eq!(hues.slots, [0, 0, 0, 1]);
+        assert_eq!(hues.slots, [0, 0, 0, 1, 1, 2]);
         assert_eq!(layout.dirs().count(), 2);
 
         layout.add("early/deep/b.rs", 0.0, 0);
@@ -1328,12 +1336,20 @@ mod tests {
         hues.sync(&layout);
         assert_eq!(hues.slots, [0, 0, 0, 1, 1, 2]);
 
-        let mut rewind = Layout::planned(&[]);
+        let mut rewind = Layout::planned_paths(
+            &[
+                "early/deep/a.rs",
+                "later/a.rs",
+                "later/deeper/b.rs",
+                "new/a.rs",
+            ],
+            0,
+        );
         rewind.add("early/deep/a.rs", 0.0, 0);
         hues.sync(&rewind);
         rewind.add("later/a.rs", 0.0, 0);
         hues.sync(&rewind);
-        assert_eq!(&hues.slots[..rewind.dir_count()], &[0, 0, 0, 1]);
+        assert_eq!(&hues.slots[..rewind.dir_count()], &[0, 0, 0, 1, 1, 2]);
     }
 
     #[test]

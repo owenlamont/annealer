@@ -1,13 +1,12 @@
-use std::{
-    collections::VecDeque,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use bevy::math::Vec2;
 
 use super::{Layout, MAX_ACCELERATION, MAX_SPEED, Presence, parent_path};
-use crate::{model, timeline::Event};
+use crate::{
+    model,
+    timeline::{Event, Kind},
+};
 
 const SAMPLE_TICKS: usize = 15;
 const GAP: f32 = 0.08;
@@ -20,6 +19,7 @@ pub(super) struct Plan {
     pub(super) time: f32,
     origin: f32,
     step: f32,
+    seconds: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -34,7 +34,6 @@ enum Region {
 
 impl Plan {
     fn new(layout: &mut Layout, events: &[Event], starts: &[f32]) -> Self {
-        let started = Instant::now();
         for event in events {
             for change in &event.changes {
                 layout.ensure_dir(parent_path(&change.path));
@@ -54,40 +53,24 @@ impl Plan {
             }
         }
         let root = subtree(&children, 0, &peak, &mut regions, &mut sizes);
-        let mut window = 8;
+        let mut windows = vec![8_usize; required[0].len()];
         let mut samples = loop {
-            // Dilation covers both box filters and the cubic spline's positive support.
+            // Reverse the two filter supports, including the spline, into reservations.
             let reserved: Vec<_> = required
                 .iter()
-                .map(|row| maximum(row, window * 2 + 2))
+                .map(|row| spread(&spread(&maximum(row, 2), &windows), &windows))
                 .collect();
             let mut samples = pack(&regions, root, &reserved);
             anchor_motion(&mut samples, &required);
             for row in &mut samples {
-                *row = average(&average(row, window), window);
+                *row = smooth(&smooth(row, &windows), &windows);
             }
-            let largest = samples
-                .iter()
-                .zip(&required)
-                .flat_map(|(row, radii)| row.windows(2).zip(radii.windows(2)))
-                .filter(|(_, radii)| radii.iter().all(|&radius| radius > 0.0))
-                .map(|(pair, _)| pair)
-                .map(|pair| pair[0].distance(pair[1]))
-                .fold(0.0, f32::max);
-            let curvature = samples
-                .iter()
-                .zip(&required)
-                .flat_map(|(row, radii)| row.windows(3).zip(radii.windows(3)))
-                .filter(|(_, radii)| radii.iter().all(|&radius| radius > 0.0))
-                .map(|(points, _)| points)
-                .map(|points| (points[0] - 2.0 * points[1] + points[2]).length())
-                .fold(0.0, f32::max);
-            if largest / step <= MAX_SPEED
-                && curvature / (step * step) <= MAX_ACCELERATION
-            {
+            let failed = motion_failures(&samples, &required, step);
+            if !failed.iter().any(|&value| value) {
                 break samples;
             }
-            window *= 2;
+            let updated = widen_windows(&windows, &failed);
+            windows = updated;
         };
         for position in samples.iter_mut().flatten() {
             *position = Vec2::new(position.y, -position.x);
@@ -102,20 +85,13 @@ impl Plan {
                 average(&average(&values, 2), 2)
             })
             .collect::<Vec<_>>();
-        eprintln!(
-            "region_plan_seconds={:.6} directories={} samples={} easing_window_seconds={:.2}",
-            started.elapsed().as_secs_f64(),
-            samples.len(),
-            samples.first().map_or(0, Vec::len),
-            model::count_u32(u32::try_from(window).expect("smoothing window fits u32"))
-                * step
-        );
         Self {
             samples: samples.into(),
             footprints: footprints.into(),
             time: 0.0,
             origin: 0.0,
             step,
+            seconds: 0.0,
         }
     }
 
@@ -173,16 +149,47 @@ fn occupancy(
         usize::try_from(ticks).expect("tick count fits usize") / sample_ticks + 2;
     let mut required = vec![vec![0.0_f32; samples]; layout.dir_count()];
     let mut event_index = 0;
+    let mut releases = std::collections::BinaryHeap::new();
+    let mut deadlines = std::collections::HashMap::new();
     let mut tick = 0;
     while tick <= ticks {
         let time = model::tick_time(tick);
         while starts.get(event_index).is_some_and(|&start| start <= time) {
             for change in &events[event_index].changes {
-                model::apply(&mut shadow, change, 0);
+                let id = model::apply(&mut shadow, change, 0);
+                if matches!(change.kind, Kind::Deleted)
+                    && shadow.files[&id].state == Presence::Leaving
+                {
+                    let end = tick_at(
+                        time + shadow.files[&id].delay
+                            + super::FADE_SECONDS
+                            + 2.0 / 60.0,
+                    );
+                    deadlines.insert(id, end);
+                    releases.push(std::cmp::Reverse((end, id)));
+                } else if shadow.files[&id].state != Presence::Leaving {
+                    deadlines.remove(&id);
+                }
             }
             event_index += 1;
         }
-        shadow.fade_files(1.0 / 60.0);
+        while releases
+            .peek()
+            .is_some_and(|&std::cmp::Reverse((end, _))| end <= tick)
+        {
+            let std::cmp::Reverse((end, id)) = releases.pop().expect("release is due");
+            if deadlines.get(&id) != Some(&end) {
+                continue;
+            }
+            deadlines.remove(&id);
+            let Some(file) = shadow.files.remove(&id) else {
+                continue;
+            };
+            if shadow.file_index.get(&file.path) == Some(&id) {
+                shadow.file_index.remove(&file.path);
+            }
+            shadow.free_slot(file.dir, file.slot);
+        }
         shadow.compact_slots();
         let mut active: Vec<_> = shadow.dirs.iter().map(|dir| dir.files > 0).collect();
         for index in (1..active.len()).rev() {
@@ -200,20 +207,15 @@ fn occupancy(
             required[index][sample] = required[index][sample].max(radius);
             required[index][sample + 1] = required[index][sample + 1].max(radius);
         }
-        let settled = shadow
-            .files
-            .values()
-            .all(|file| file.state == Presence::Present);
-        if settled {
-            let next_sample = u64::try_from((sample + 1) * sample_ticks)
-                .expect("sample tick fits u64");
-            let next_event = starts
-                .get(event_index)
-                .map_or(ticks.saturating_add(1), |&start| tick_at(start));
-            tick = next_sample.min(next_event).max(tick + 1);
-        } else {
-            tick += 1;
-        }
+        let next_sample =
+            u64::try_from((sample + 1) * sample_ticks).expect("sample tick fits u64");
+        let next_event = starts
+            .get(event_index)
+            .map_or(ticks.saturating_add(1), |&start| tick_at(start));
+        let next_release = releases
+            .peek()
+            .map_or(ticks.saturating_add(1), |&std::cmp::Reverse((end, _))| end);
+        tick = next_sample.min(next_event).min(next_release).max(tick + 1);
     }
     (required, step)
 }
@@ -270,6 +272,94 @@ fn average(values: &[Vec2], window: usize) -> Vec<Vec2> {
     result
 }
 
+fn motion_failures(
+    samples: &[Vec<Vec2>],
+    required: &[Vec<f32>],
+    step: f32,
+) -> Vec<bool> {
+    let mut failed = vec![false; required[0].len()];
+    for (row, radii) in samples.iter().zip(required) {
+        for (index, (points, radii)) in row.windows(3).zip(radii.windows(3)).enumerate()
+        {
+            if radii.iter().all(|&radius| radius > 0.0)
+                && (points[0].distance(points[1]) / step > MAX_SPEED
+                    || points[1].distance(points[2]) / step > MAX_SPEED
+                    || (points[0] - 2.0 * points[1] + points[2]).length()
+                        / (step * step)
+                        > MAX_ACCELERATION)
+            {
+                failed[index..index + 3].fill(true);
+            }
+        }
+    }
+    failed
+}
+
+fn widen_windows(windows: &[usize], failed: &[bool]) -> Vec<usize> {
+    let mut updated = windows.to_vec();
+    for (index, _) in failed.iter().enumerate().filter(|&(_, failed)| *failed) {
+        let window = windows[index];
+        assert!(
+            window < 16_384,
+            "layout smoothing did not meet motion bounds"
+        );
+        for value in &mut updated
+            [index.saturating_sub(window)..windows.len().min(index + window + 1)]
+        {
+            *value = (*value).max(window * 2);
+        }
+    }
+    updated
+}
+fn spread(values: &[f32], windows: &[usize]) -> Vec<f32> {
+    let mut intervals: Vec<_> = values
+        .iter()
+        .zip(windows)
+        .enumerate()
+        .map(|(index, (&radius, &window))| {
+            (index.saturating_sub(window), index + window, radius)
+        })
+        .collect();
+    intervals.sort_by_key(|&(start, ..)| start);
+    let mut pending = 0;
+    let mut heap = std::collections::BinaryHeap::new();
+    (0..values.len())
+        .map(|index| {
+            while pending < intervals.len() && intervals[pending].0 <= index {
+                let (_, end, radius) = intervals[pending];
+                heap.push((radius.to_bits(), end));
+                pending += 1;
+            }
+            while heap.peek().is_some_and(|&(_, end)| end < index) {
+                heap.pop();
+            }
+            f32::from_bits(heap.peek().expect("support includes its centre").0)
+        })
+        .collect()
+}
+
+fn smooth(values: &[Vec2], windows: &[usize]) -> Vec<Vec2> {
+    let mut prefix = vec![bevy::math::DVec2::ZERO; values.len() + 1];
+    for (index, value) in values.iter().enumerate() {
+        prefix[index + 1] = prefix[index] + value.as_dvec2();
+    }
+    windows
+        .iter()
+        .enumerate()
+        .map(|(index, &window)| {
+            let low = index.saturating_sub(window);
+            let high = values.len().min(index + window + 1);
+            let left = window.saturating_sub(index);
+            let right = (index + window + 1).saturating_sub(values.len());
+            let count = |n| f64::from(u32::try_from(n).expect("filter width fits u32"));
+            ((prefix[high] - prefix[low]
+                + values[0].as_dvec2() * count(left)
+                + values[values.len() - 1].as_dvec2() * count(right))
+                / count(window * 2 + 1))
+            .as_vec2()
+        })
+        .collect()
+}
 fn anchor_motion(samples: &mut [Vec<Vec2>], required: &[Vec<f32>]) {
     let mut previous: Vec<_> = samples.iter().map(|row| row[0]).collect();
     let mut shift = Vec2::ZERO;
@@ -373,113 +463,54 @@ fn combine(
 }
 
 fn pack(regions: &[Region], root: usize, reserved: &[Vec<f32>]) -> Vec<Vec<Vec2>> {
-    let peak: Vec<_> = reserved
-        .iter()
-        .map(|row| vec![row.iter().copied().fold(0.0, f32::max)])
-        .collect();
-    let reference = pack_regions(regions, root, &peak);
-    compact(&reference, reserved)
+    let (samples, residual) = pack_with_residual(regions, root, reserved);
+    assert!(residual < 0.001, "region separation residual: {residual}");
+    samples
 }
 
-fn compact(reference: &[Vec<Vec2>], reserved: &[Vec<f32>]) -> Vec<Vec<Vec2>> {
-    let mut pairs = Vec::new();
-    for a in 0..reference.len() {
-        for b in a + 1..reference.len() {
-            pairs.push((a, b, (reference[b][0] - reference[a][0]).normalize()));
-        }
-    }
-    let mut result = vec![Vec::new(); reserved.len()];
-    let peak_sum: f32 = reserved
-        .iter()
-        .map(|row| row.iter().copied().fold(0.0, f32::max))
-        .sum();
-    for sample in 0..reserved[0].len() {
-        let scale =
-            reserved.iter().map(|row| row[sample]).sum::<f32>() / peak_sum.max(0.001);
-        let mut positions: Vec<_> =
-            reference.iter().map(|row| row[0] * scale).collect();
-        for iteration in 0..512 {
-            if iteration < 64 {
-                for position in &mut positions {
-                    *position *= 0.98;
-                }
-            }
-            let mut violation = 0.0_f32;
-            for &(a, b, normal) in &pairs {
-                let missing = reserved[a][sample] + reserved[b][sample] + GAP
-                    - (positions[b] - positions[a]).dot(normal);
-                if missing > 0.0 {
-                    let correction = normal * (missing * 0.5);
-                    positions[a] -= correction;
-                    positions[b] += correction;
-                    violation = violation.max(missing);
-                }
-            }
-            if iteration >= 64 && violation < 0.001 {
-                break;
-            }
-        }
-        let origin = positions[0];
-        for (row, position) in result.iter_mut().zip(positions) {
-            row.push(position - origin);
-        }
-    }
-    result
-}
-
-fn pack_regions(
+fn pack_with_residual(
     regions: &[Region],
     root: usize,
     reserved: &[Vec<f32>],
-) -> Vec<Vec<Vec2>> {
+) -> (Vec<Vec<Vec2>>, f32) {
     let samples = reserved[0].len();
     let mut result = vec![vec![Vec2::ZERO; samples]; reserved.len()];
-    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); regions.len()];
-    for (index, region) in regions.iter().enumerate() {
-        groups[index] = match *region {
-            Region::Directory(dir) => vec![dir],
-            Region::Split { left, right, .. } => {
-                groups[left].iter().chain(&groups[right]).copied().collect()
-            }
-        };
-    }
+    let mut sizes = vec![Vec2::ZERO; regions.len()];
+    let mut offsets = vec![Vec2::ZERO; regions.len()];
+    let mut residual = 0.0_f32;
     for sample in 0..samples {
         for (index, region) in regions.iter().enumerate() {
-            let Region::Split { left, right, axis } = *region else {
-                continue;
+            sizes[index] = match *region {
+                Region::Directory(dir) => Vec2::splat(reserved[dir][sample] * 2.0),
+                Region::Split { left, right, axis } => {
+                    let mut size = sizes[left].max(sizes[right]);
+                    size[axis] = sizes[left][axis] + sizes[right][axis] + GAP;
+                    size
+                }
             };
-            let mut shift = 0.0_f32;
-            for &a in &groups[left] {
-                for &b in &groups[right] {
-                    let radii = reserved[a][sample] + reserved[b][sample] + GAP;
-                    let delta = result[b][sample] - result[a][sample];
-                    let separation =
-                        (radii * radii - delta[1 - axis].powi(2)).max(0.0).sqrt();
-                    shift = shift.max(separation - delta[axis]);
+        }
+        offsets[root] = Vec2::ZERO;
+        for (index, region) in regions.iter().enumerate().rev() {
+            match *region {
+                Region::Directory(dir) => result[dir][sample] = offsets[index],
+                Region::Split { left, right, axis } => {
+                    offsets[left] = offsets[index];
+                    offsets[right] = offsets[index];
+                    offsets[left][axis] -= sizes[right][axis].midpoint(GAP);
+                    offsets[right][axis] += sizes[left][axis].midpoint(GAP);
+                    let gap = offsets[right][axis]
+                        - offsets[left][axis]
+                        - sizes[left][axis].midpoint(sizes[right][axis]);
+                    residual = residual.max(GAP - gap);
                 }
             }
-            for &dir in &groups[right] {
-                result[dir][sample][axis] += shift;
-            }
-            let mut low = Vec2::splat(f32::INFINITY);
-            let mut high = Vec2::splat(f32::NEG_INFINITY);
-            for &dir in &groups[index] {
-                low = low.min(result[dir][sample] - Vec2::splat(reserved[dir][sample]));
-                high =
-                    high.max(result[dir][sample] + Vec2::splat(reserved[dir][sample]));
-            }
-            let centre = (low + high) * 0.5;
-            for &dir in &groups[index] {
-                result[dir][sample] -= centre;
-            }
         }
-        debug_assert_eq!(groups[root].len(), reserved.len());
         let anchor = result[0][sample];
         for row in &mut result {
             row[sample] -= anchor;
         }
     }
-    result
+    (result, residual)
 }
 
 impl Layout {
@@ -508,18 +539,21 @@ impl Layout {
 
     pub(crate) fn scheduled(events: &[Event], starts: &[f32]) -> Self {
         let mut layout = Self::empty();
-        if !events.is_empty() {
-            layout.plan = Plan::new(&mut layout, events, starts);
-        }
+        let started = std::time::Instant::now();
+        layout.plan = Plan::new(&mut layout, events, starts);
+        layout.plan.seconds = started.elapsed().as_secs_f64();
         for (index, dir) in layout.dirs.iter_mut().enumerate() {
             dir.live = index == 0;
-            dir.activated = index == 0;
             dir.children = 0;
             if let Some(position) = layout.plan.position(index) {
                 dir.position = position;
             }
         }
         layout
+    }
+
+    pub(crate) fn planning_seconds(&self) -> f64 {
+        self.plan.seconds
     }
 
     pub(crate) fn plan_time(&mut self, time: f32) {
@@ -533,10 +567,7 @@ impl Layout {
 
     pub(super) fn relax(&mut self, dt: f32) {
         self.plan.time += dt;
-        if self.plan.samples.is_empty() {
-            self.relax_unplanned(dt);
-            return;
-        }
+
         for (index, dir) in self.dirs.iter_mut().enumerate() {
             dir.position = self
                 .plan
@@ -619,6 +650,58 @@ mod tests {
         events
     }
 
+    #[test]
+    fn empty_history_has_a_root_trajectory() {
+        let layout = Layout::planned(&[]);
+        assert_eq!(layout.plan.samples.len(), 1);
+        assert_eq!(layout.plan.position(0), Some(Vec2::ZERO));
+    }
+
+    #[test]
+    fn local_windows_preserve_filter_support_and_leave_remote_spans_alone() {
+        let values = [0.0_f32, 1.0, 0.0, 4.0, 2.0, 0.0];
+        let windows = [1, 2, 1, 3, 1, 2];
+        let actual = spread(&values, &windows);
+        for (index, &value) in actual.iter().enumerate() {
+            let expected = values
+                .iter()
+                .zip(windows)
+                .enumerate()
+                .filter(|&(source, (_, window))| source.abs_diff(index) <= window)
+                .map(|(_, (&value, _))| value)
+                .fold(0.0, f32::max);
+            assert_eq!(value, expected);
+        }
+        let values: Vec<_> = values.into_iter().map(Vec2::splat).collect();
+        let fixed = vec![2; values.len()];
+        for (actual, expected) in
+            smooth(&values, &fixed).iter().zip(average(&values, 2))
+        {
+            assert!(actual.distance(expected) < 0.00001);
+        }
+        let mut failed = vec![false; 400];
+        failed[200] = true;
+        let widened = widen_windows(&[8; 400], &failed);
+        assert_eq!(widened[200], 16);
+        assert_eq!(widened[0], 8);
+        assert_eq!(widened[399], 8);
+    }
+
+    #[test]
+    fn subtree_packing_reports_its_separation_residual() {
+        let regions = [
+            Region::Directory(0),
+            Region::Directory(1),
+            Region::Split {
+                left: 0,
+                right: 1,
+                axis: 0,
+            },
+        ];
+        let (_, residual) =
+            pack_with_residual(&regions, 2, &[vec![100.0, 0.0], vec![0.0, 100.0]]);
+        assert!(residual < 0.001);
+    }
     #[test]
     fn global_sibling_order_never_changes_even_when_later_paths_sort_first() {
         let events = burst();
@@ -782,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn packing_compacts_after_capacity_retires_and_uses_circular_gaps() {
+    fn packing_releases_capacity_and_preserves_split_gaps() {
         let regions = [
             Region::Directory(0),
             Region::Directory(1),
@@ -798,14 +881,24 @@ mod tests {
     }
 
     #[test]
-    fn compacted_separation_survives_interpolation_during_opposing_growth() {
-        let reference = [
-            vec![Vec2::ZERO],
-            vec![Vec2::new(10.0, 1.0)],
-            vec![Vec2::new(2.0, 12.0)],
-        ];
+    fn subtree_separation_survives_interpolation_during_opposing_growth() {
         let radii = [vec![4.0, 0.4], vec![0.4, 3.0], vec![2.0, 1.0]];
-        let positions = compact(&reference, &radii);
+        let regions = [
+            Region::Directory(0),
+            Region::Directory(1),
+            Region::Split {
+                left: 0,
+                right: 1,
+                axis: 0,
+            },
+            Region::Directory(2),
+            Region::Split {
+                left: 2,
+                right: 3,
+                axis: 1,
+            },
+        ];
+        let positions = pack(&regions, 4, &radii);
         for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let position =
                 |index: usize| positions[index][0].lerp(positions[index][1], fraction);
@@ -855,7 +948,8 @@ mod tests {
                 entry
             })
             .collect();
-        let started = Instant::now();
+
+        let started = std::time::Instant::now();
         let layout = Layout::planned(&events);
         eprintln!(
             "large_inline_plan_seconds={:.6} events={} directories={} files=12000",
@@ -865,5 +959,251 @@ mod tests {
         );
         assert_eq!(layout.dir_count(), 6_001);
         assert!(layout.plan.samples[0].len() <= 8_194);
+    }
+}
+
+#[cfg(test)]
+mod probes {
+    use super::*;
+    use crate::{
+        contributors::Mappings,
+        model::{Options, Simulation},
+        theme::Theme,
+        timeline::{FileChange, Identity, Kind},
+    };
+
+    fn ev(seconds: i64, changes: Vec<(String, Kind)>) -> Event {
+        Event {
+            seconds,
+            author: Identity {
+                name: b"Ada".to_vec(),
+                email: Vec::new(),
+            },
+            contributor: None,
+            changes: changes
+                .into_iter()
+                .map(|(path, kind)| FileChange {
+                    path,
+                    kind,
+                    insertions: 1,
+                    removals: 0,
+                })
+                .collect(),
+        }
+    }
+
+    pub(super) fn assert_separated(sim: &Simulation) {
+        let dirs: Vec<_> = sim.layout().dirs().collect();
+        for (index, (_, a)) in dirs.iter().enumerate() {
+            for (_, b) in &dirs[index + 1..] {
+                assert!(
+                    a.position.distance(b.position) + 0.0001 >= a.radius() + b.radius(),
+                    "{} overlaps {} at {}",
+                    a.path,
+                    b.path,
+                    sim.seconds()
+                );
+            }
+        }
+    }
+
+    fn audit(_name: &str, events: Vec<Event>, ticks: u32) {
+        let mut sim = Simulation::new(
+            events,
+            &Options::default(),
+            &Theme::neon(),
+            &Mappings::default(),
+        );
+        let mut previous = std::collections::BTreeMap::new();
+        for _ in 0..ticks {
+            sim.tick_layout();
+            assert_separated(&sim);
+            for (id, file) in sim.layout().files() {
+                if let Some(before) = previous.insert(id, file.position) {
+                    assert!(file.position.distance(before) * 60.0 <= MAX_SPEED + 0.001);
+                }
+                let own = sim.layout().dir(file.dir);
+                let presence = file.visible_presence(own);
+                if presence > 0.0 {
+                    assert!(
+                        file.position.distance(own.position) + 0.27 * presence
+                            <= own.radius() + 0.0001
+                    );
+                }
+            }
+        }
+    }
+    fn files(prefix: &str, n: usize, kind: &Kind) -> Vec<(String, Kind)> {
+        (0..n)
+            .map(|i| (format!("{prefix}/{i}"), kind.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn probe_sibling_burst() {
+        let mut events = vec![ev(
+            0,
+            (0..60)
+                .map(|d| (format!("p/d{d}/seed"), Kind::Added))
+                .collect(),
+        )];
+        for day in 1..5 {
+            events.push(ev(day * 86_400, vec![("p/d0/seed".into(), Kind::Modified)]));
+        }
+        let mut big = Vec::new();
+        for d in 0..60 {
+            big.extend(files(&format!("p/d{d}"), 40, &Kind::Added));
+        }
+        events.push(ev(5 * 86_400, big));
+        let mut del = Vec::new();
+        for d in 0..60 {
+            del.extend(files(&format!("p/d{d}"), 40, &Kind::Deleted));
+        }
+        events.push(ev(6 * 86_400, del));
+        audit("sibling_burst", events, 60 * 10);
+    }
+
+    #[test]
+    fn probe_far_rename() {
+        let mut events = vec![ev(0, files("a/b/c/d", 30, &Kind::Added))];
+        events.push(ev(86_400, files("z/y/x/w", 30, &Kind::Added)));
+        for d in 0..20 {
+            events.push(ev(
+                2 * 86_400 + d,
+                files(&format!("m{d}"), 30, &Kind::Added),
+            ));
+        }
+        events.push(ev(
+            3 * 86_400,
+            (0..30)
+                .map(|i| {
+                    (
+                        format!("z/y/x/w/r{i}"),
+                        Kind::Moved {
+                            from: format!("a/b/c/d/{i}"),
+                        },
+                    )
+                })
+                .collect(),
+        ));
+        events.push(ev(4 * 86_400, vec![("a/b/c/d/new".into(), Kind::Added)]));
+        audit("far_rename", events, 60 * 8);
+    }
+
+    #[test]
+    fn probe_root_burst_and_reactivation() {
+        let mut events = vec![ev(0, files("x", 5, &Kind::Added))];
+        events.push(ev(
+            86_400,
+            (0..400)
+                .map(|i| (format!("r{i}.rs"), Kind::Added))
+                .collect(),
+        ));
+        events.push(ev(2 * 86_400, files("x", 5, &Kind::Deleted)));
+        events.push(ev(2 * 86_400 + 10, files("x", 50, &Kind::Added)));
+        events.push(ev(
+            3 * 86_400,
+            (0..400)
+                .map(|i| (format!("r{i}.rs"), Kind::Deleted))
+                .collect(),
+        ));
+        audit("root_burst_reactivation", events, 60 * 7);
+    }
+
+    #[test]
+    fn probe_scaling() {
+        for dirs in [100usize, 200, 400] {
+            let events: Vec<_> = (0..200)
+                .map(|c| {
+                    ev(
+                        i64::try_from(c).unwrap() * 3_600,
+                        (0..=dirs / 50)
+                            .map(|k| {
+                                (
+                                    format!(
+                                        "crate-{}/src/{c}.rs",
+                                        (c * 7 + k * 13) % dirs
+                                    ),
+                                    Kind::Added,
+                                )
+                            })
+                            .collect(),
+                    )
+                })
+                .collect();
+            let started = std::time::Instant::now();
+            let layout = Layout::planned(&events);
+            assert_eq!(layout.dir_count(), dirs * 2 + 1);
+            assert!(layout.plan.samples[0].len() <= 53);
+            eprintln!(
+                "PROBE scaling dirs={} samples={} secs={:.3}",
+                layout.dir_count(),
+                layout.plan.samples[0].len(),
+                started.elapsed().as_secs_f64()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod rate_probe {
+    use super::*;
+    use crate::{
+        contributors::Mappings,
+        model::{Options, Simulation},
+        theme::Theme,
+        timeline::{FileChange, Identity, Kind},
+    };
+
+    #[test]
+    fn probe_rate_change() {
+        for factor in [0.25_f32, 4.0] {
+            let ev = |s: i64, paths: Vec<String>| Event {
+                seconds: s,
+                author: Identity {
+                    name: b"Ada".to_vec(),
+                    email: Vec::new(),
+                },
+                contributor: None,
+                changes: paths
+                    .into_iter()
+                    .map(|path| FileChange {
+                        path,
+                        kind: Kind::Added,
+                        insertions: 1,
+                        removals: 0,
+                    })
+                    .collect(),
+            };
+            let mut events =
+                vec![ev(0, (0..30).map(|d| format!("p/d{d}/seed")).collect())];
+            for day in 1..40 {
+                events.push(ev(day * 86_400, vec![format!("p/d{}/f{day}", day % 30)]));
+            }
+            for (k, day) in (40..46).enumerate() {
+                events.push(ev(
+                    day * 86_400,
+                    (0..60).map(|i| format!("p/d{}/burst{i}", k * 5)).collect(),
+                ));
+            }
+            let mut sim = Simulation::new(
+                events,
+                &Options::default(),
+                &Theme::neon(),
+                &Mappings::default(),
+            );
+            sim.change_rate(factor);
+            let ticks = u32::try_from(tick_at(sim.duration())).unwrap();
+            for _ in 0..ticks {
+                sim.tick_layout();
+                super::probes::assert_separated(&sim);
+            }
+            sim.restart();
+            let ticks = u32::try_from(tick_at(sim.duration())).unwrap();
+            for _ in 0..ticks {
+                sim.tick_layout();
+                super::probes::assert_separated(&sim);
+            }
+        }
     }
 }

@@ -41,6 +41,7 @@ enum Command {
     LayoutQuality {
         #[command(flatten)]
         source: Source,
+        /// Write per-tick measurements and a summary as JSON Lines.
         output: PathBuf,
     },
     /// Inspect local history as JSON; merge changes compare against the first parent.
@@ -162,6 +163,10 @@ fn main() -> anyhow::Result<()> {
             let started = std::time::Instant::now();
             let (mut simulation, _) = source.load()?;
             eprintln!("load_plan_seconds={:.6}", started.elapsed().as_secs_f64());
+            eprintln!(
+                "region_plan_seconds={:.6}",
+                simulation.layout().planning_seconds()
+            );
             let started = std::time::Instant::now();
             let mut writer = std::io::BufWriter::new(std::fs::File::create(output)?);
             serde_json::to_writer(

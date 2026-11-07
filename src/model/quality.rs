@@ -27,6 +27,15 @@ struct Movement {
     max_directory_jump: f64,
 }
 
+impl Movement {
+    fn accumulate(&mut self, movement: &Self) {
+        self.files += movement.files;
+        self.directories += movement.directories;
+        self.max_file_jump = self.max_file_jump.max(movement.max_file_jump);
+        self.max_directory_jump =
+            self.max_directory_jump.max(movement.max_directory_jump);
+    }
+}
 const FAST_SPEED: f64 = 6.0;
 
 #[derive(Default)]
@@ -104,10 +113,57 @@ struct Sample {
     frame: u32,
     commit: usize,
     overlap_pairs: u32,
+    file_clearance: FileClearance,
+    visible_file_clearance: FileClearance,
     mean_diameter: Option<f64>,
     min_diameter: Option<f64>,
     extent_use: f64,
     movement: Movement,
+}
+
+#[derive(Default, Serialize)]
+struct FileClearance {
+    foreign_pair_ticks: u64,
+    outside_own_ticks: u64,
+    worst_foreign_depth: f32,
+    worst_outside_depth: f32,
+}
+
+impl FileClearance {
+    fn measure(layout: &crate::layout::Layout, visible: bool) -> Self {
+        let mut result = Self::default();
+        for (_, file) in layout.files().filter(|(_, file)| file.presence > 0.0) {
+            let presence = if visible {
+                file.visible_presence(layout.dir(file.dir))
+            } else {
+                file.presence
+            };
+            if presence <= 0.0 {
+                continue;
+            }
+            let radius = 0.27 * presence;
+            let own = layout.dir(file.dir);
+            let outside = file.position.distance(own.position) + radius - own.radius();
+            result.outside_own_ticks += u64::from(outside > 0.0001);
+            result.worst_outside_depth = result.worst_outside_depth.max(outside);
+            for (_, dir) in layout.dirs().filter(|(id, _)| *id != file.dir) {
+                let depth =
+                    dir.radius() + radius - file.position.distance(dir.position);
+                result.foreign_pair_ticks += u64::from(depth > 0.0001);
+                result.worst_foreign_depth = result.worst_foreign_depth.max(depth);
+            }
+        }
+        result
+    }
+
+    fn accumulate(&mut self, sample: &Self) {
+        self.foreign_pair_ticks += sample.foreign_pair_ticks;
+        self.outside_own_ticks += sample.outside_own_ticks;
+        self.worst_foreign_depth =
+            self.worst_foreign_depth.max(sample.worst_foreign_depth);
+        self.worst_outside_depth =
+            self.worst_outside_depth.max(sample.worst_outside_depth);
+    }
 }
 
 fn visibility(simulation: &Simulation) -> (f64, u32, Option<f64>, f64) {
@@ -116,13 +172,11 @@ fn visibility(simulation: &Simulation) -> (f64, u32, Option<f64>, f64) {
     let mut sum = 0.0;
     let mut count = 0;
     let mut minimum = f64::INFINITY;
-    for (_, file) in simulation
-        .layout()
-        .files()
-        .filter(|(_, file)| file.presence > 0.0)
-    {
+    for (_, file) in simulation.layout().files().filter(|(_, file)| {
+        file.visible_presence(simulation.layout().dir(file.dir)) > 0.0
+    }) {
         let centre = ground(file.position);
-        let radius = 0.27 * file.presence;
+        let radius = 0.27 * file.visible_presence(simulation.layout().dir(file.dir));
         let points = [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z]
             .map(|side| centre + side * radius);
         let diameter = projected_extent(eye, focus, &points);
@@ -157,6 +211,17 @@ fn projected_extent(eye: Vec3, focus: Vec3, points: &[Vec3]) -> Vec2 {
     (high - low).max(Vec2::ZERO)
 }
 
+fn positions(
+    layout: &crate::layout::Layout,
+) -> (BTreeMap<u64, Vec2>, BTreeMap<usize, Vec2>) {
+    (
+        layout
+            .files()
+            .map(|(id, file)| (id, file.position))
+            .collect(),
+        layout.dirs().map(|(id, dir)| (id, dir.position)).collect(),
+    )
+}
 /// Writes definitions, per-tick records, and a summary as JSON Lines without GPU startup.
 /// Runtime is deliberately excluded so identical inputs produce identical report bytes.
 pub(crate) fn run(
@@ -183,16 +248,14 @@ pub(crate) fn run(
     let mut observations = 0.0;
     let mut minimum = f64::INFINITY;
     let mut extent_sum = 0.0;
+    let mut file_clearance = FileClearance::default();
+    let mut visible_file_clearance = FileClearance::default();
     for frame in 0..=frames {
         simulation.advance_to(frame, 60);
         progress(frame, frames, simulation.commit());
         let commit = simulation.commit();
         let layout = simulation.layout();
-        let files = layout
-            .files()
-            .map(|(id, file)| (id, file.position))
-            .collect();
-        let dirs = layout.dirs().map(|(id, dir)| (id, dir.position)).collect();
+        let (files, dirs) = positions(layout);
         let (file_distance, file_jump) = displacement(&previous_files, &files);
         let (dir_distance, dir_jump) = displacement(&previous_dirs, &dirs);
         if commit != interval_commit {
@@ -200,10 +263,8 @@ pub(crate) fn run(
             interval = NetMovement::default();
             interval_commit = commit;
         }
-        for vectors in [&mut net, &mut interval] {
-            add_vectors(&mut vectors.files, &previous_files, &files);
-            add_vectors(&mut vectors.directories, &previous_dirs, &dirs);
-        }
+        net.record(&previous_files, &files, &previous_dirs, &dirs);
+        interval.record(&previous_files, &files, &previous_dirs, &dirs);
         file_speeds.record(&previous_files, &files);
         directory_speeds.record(&previous_dirs, &dirs);
         previous_files = files;
@@ -215,11 +276,7 @@ pub(crate) fn run(
             max_directory_jump: dir_jump,
         };
         for accumulator in [&mut total, commits.entry(commit).or_default()] {
-            accumulator.files += file_distance;
-            accumulator.directories += dir_distance;
-            accumulator.max_file_jump = accumulator.max_file_jump.max(file_jump);
-            accumulator.max_directory_jump =
-                accumulator.max_directory_jump.max(dir_jump);
+            accumulator.accumulate(&movement);
         }
         let pairs = count_overlaps(layout, commit, &mut hotspots);
         overlapped_frames += u32::from(pairs > 0);
@@ -234,11 +291,15 @@ pub(crate) fn run(
             frame,
             commit,
             overlap_pairs: pairs,
+            file_clearance: FileClearance::measure(layout, false),
+            visible_file_clearance: FileClearance::measure(layout, true),
             mean_diameter: (count > 0).then(|| sum / f64::from(count)),
             min_diameter: min,
             extent_use: extent,
             movement,
         };
+        file_clearance.accumulate(&record.file_clearance);
+        visible_file_clearance.accumulate(&record.visible_file_clearance);
         serde_json::to_writer(&mut *writer, &record)?;
         writeln!(writer)?;
     }
@@ -249,6 +310,8 @@ pub(crate) fn run(
             "summary": {
                 "frames": frames + 1, "overlapped_frames": overlapped_frames,
                 "worst_pairs": worst_pairs, "pair_frames": pair_frames,
+                "file_clearance": file_clearance,
+                "visible_file_clearance": visible_file_clearance,
                 "mean_diameter": (observations > 0.0).then(|| diameter_sum / observations),
                 "min_diameter": minimum.is_finite().then_some(minimum),
                 "mean_extent_use": extent_sum / f64::from(frames + 1),
@@ -268,6 +331,24 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clearance_detects_cross_tree_transit_and_matches_visible_scaling() {
+        let mut layout = crate::layout::Layout::planned_paths(&["a/file", "z/file"], 0);
+        layout.add("a/file", 0.0, 0);
+        layout.add("z/file", 0.0, 0);
+        layout.settle(120, 1.0 / 60.0);
+        let clear = FileClearance::measure(&layout, false);
+        assert_eq!(clear.foreign_pair_ticks, 0);
+        assert_eq!(clear.outside_own_ticks, 0);
+        layout.rename("a/file", "z/moved", 0);
+        let transit = FileClearance::measure(&layout, false);
+        assert!(transit.foreign_pair_ticks > 0);
+        assert!(transit.outside_own_ticks > 0);
+        let visible = FileClearance::measure(&layout, true);
+        assert_eq!(visible.foreign_pair_ticks, 0);
+        assert_eq!(visible.outside_own_ticks, 0);
+    }
 
     #[test]
     fn speeds_include_stationary_ids_exclude_births_and_use_strict_threshold() {
@@ -389,6 +470,16 @@ struct NetMovement {
 }
 
 impl NetMovement {
+    fn record(
+        &mut self,
+        previous_files: &BTreeMap<u64, Vec2>,
+        files: &BTreeMap<u64, Vec2>,
+        previous_dirs: &BTreeMap<usize, Vec2>,
+        dirs: &BTreeMap<usize, Vec2>,
+    ) {
+        add_vectors(&mut self.files, previous_files, files);
+        add_vectors(&mut self.directories, previous_dirs, dirs);
+    }
     fn measure(&self) -> (f64, f64) {
         (
             self.files
@@ -460,6 +551,7 @@ fn definitions(writer: &mut impl Write) -> anyhow::Result<()> {
     serde_json::to_writer(
         &mut *writer,
         &serde_json::json!({"definitions": DEFINITIONS,
+            "file_clearance_definitions": "Raw file_clearance uses lifecycle presence > 0 and radius 0.27 * presence. visible_file_clearance uses the rendered boundary-limited presence, excluding hidden transit. Foreign pair-ticks count each file/live-foreign-directory strict disc intersection; outside-own ticks count each file whose disc exceeds its own directory disc. Penetrations <= 0.0001 world units are excluded. Worst depths are world units.",
             "speed_definitions": "Nearest-rank p95/p99/max over retained-ID per-tick speeds, including stationary observations, separately for files and live directories. World units per playback second (tick distance times 60). Birth/reactivation placement excluded. Fast distance sums the full tick distance when speed strictly exceeds 6 world units/s: 0.1 units per 60 Hz tick, approximately 19% of a full-size file's 0.54-unit diameter per tick. Threshold is world-space, independent of camera zoom."}),
     )?;
     writeln!(writer)?;

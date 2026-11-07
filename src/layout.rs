@@ -4,11 +4,9 @@ use bevy::math::Vec2;
 use planner::Plan;
 
 mod planner;
-mod reactive;
 
 const SPACING: f32 = 0.62;
 const GOLDEN_ANGLE: f32 = 2.399_963_2;
-const GAP: f32 = 0.8;
 const MAX_SPEED: f32 = 3.0;
 const MAX_ACCELERATION: f32 = 48.0;
 const FILE_EASE: f32 = 5.0;
@@ -36,6 +34,11 @@ pub(super) struct File {
 }
 
 impl File {
+    pub(super) fn visible_presence(&self, dir: &Dir) -> f32 {
+        let clearance = dir.radius() - self.position.distance(dir.position);
+        self.presence.min((clearance / 0.27).clamp(0.0, 1.0))
+    }
+
     pub(super) fn name(&self) -> &str {
         self.path.rsplit('/').next().unwrap_or(&self.path)
     }
@@ -51,7 +54,6 @@ pub(super) struct Dir {
     pub files: usize,
     children: usize,
     pub live: bool,
-    activated: bool,
     reserve: f32,
 }
 
@@ -91,7 +93,6 @@ impl Layout {
             files: 0,
             children: 0,
             live: true,
-            activated: true,
             reserve: 0.4,
         };
         Self {
@@ -102,6 +103,31 @@ impl Layout {
             next_id: 0,
             plan: Plan::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn planned_paths(paths: &[&str], others: usize) -> Self {
+        use crate::timeline::{Event, FileChange, Identity, Kind};
+        let event = Event {
+            seconds: 0,
+            author: Identity {
+                name: Vec::new(),
+                email: Vec::new(),
+            },
+            contributor: None,
+            changes: paths
+                .iter()
+                .map(|path| (*path).to_owned())
+                .chain((0..others).map(|file| format!("other/{file}.rs")))
+                .map(|path| FileChange {
+                    path,
+                    kind: Kind::Added,
+                    insertions: 0,
+                    removals: 0,
+                })
+                .collect(),
+        };
+        Self::planned(&[event])
     }
 
     pub(super) fn files(&self) -> impl Iterator<Item = (u64, &File)> {
@@ -389,10 +415,9 @@ impl Layout {
                 let position = self
                     .plan
                     .position(index)
-                    .unwrap_or_else(|| self.revive_position(index, parent, path));
+                    .expect("history directories have planned trajectories");
                 let dir = &mut self.dirs[index];
                 dir.live = true;
-                dir.activated = true;
                 dir.position = position;
             }
             return index;
@@ -404,48 +429,15 @@ impl Layout {
             path: path.to_owned(),
             parent: Some(parent),
             depth: self.dirs[parent].depth + 1,
-            position: self.spawn_position(parent, path),
+            position: Vec2::ZERO,
             slots: Vec::new(),
             files: 0,
             children: 0,
             live: true,
-            activated: true,
             reserve: 0.4,
         });
         self.dir_index.insert(path.to_owned(), index);
         index
-    }
-
-    fn spawn_position(&self, parent: usize, path: &str) -> Vec2 {
-        let parent_dir = &self.dirs[parent];
-        let angle = hash_angle(path);
-        let mut direction = Vec2::from_angle(angle);
-        if let Some(grandparent) = parent_dir.parent {
-            let away = (parent_dir.position - self.dirs[grandparent].position)
-                .normalize_or_zero();
-            direction = (direction * 0.8 + away).normalize_or(direction);
-        }
-        parent_dir.position + direction * (parent_dir.core() + GAP + 0.6)
-    }
-
-    fn revive_position(&self, index: usize, parent: usize, path: &str) -> Vec2 {
-        let dir = &self.dirs[index];
-        if !dir.activated {
-            return self.spawn_position(parent, path);
-        }
-        let blocked = self.dirs().any(|(_, other)| {
-            dir.position.distance(other.position)
-                < dir.radius() + other.radius().max(other.reserve)
-        });
-        if !blocked {
-            return dir.position;
-        }
-        let parent_dir = &self.dirs[parent];
-        let offset = self.spawn_position(parent, path) - parent_dir.position;
-        let distance = offset
-            .length()
-            .max(parent_dir.radius().max(parent_dir.reserve) + dir.radius() + GAP);
-        parent_dir.position + offset.normalize_or(Vec2::X) * distance
     }
 }
 
@@ -462,15 +454,6 @@ fn spiral(slot: usize) -> Vec2 {
     Vec2::from_angle(index * GOLDEN_ANGLE) * SPACING * (index + 0.5).sqrt()
 }
 
-fn hash_angle(text: &str) -> f32 {
-    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-    });
-    f32::from(u16::try_from(hash >> 48).expect("shifted hash fits in u16"))
-        / f32::from(u16::MAX)
-        * std::f32::consts::TAU
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,7 +462,16 @@ mod tests {
 
     #[test]
     fn rename_keeps_identity_and_glides_between_directories() {
-        let mut layout = Layout::planned(&[]);
+        let mut layout = Layout::planned_paths(
+            &[
+                "src/layout.rs",
+                "src/scene/mod.rs",
+                "docs/a.md",
+                "src/b.md",
+                "docs/guide.md",
+            ],
+            40,
+        );
         let id = layout.add("src/layout.rs", 0.0, 0);
         layout.add("src/scene/mod.rs", 0.0, 0);
         layout.settle(300, DT);
@@ -499,7 +491,16 @@ mod tests {
 
     #[test]
     fn renaming_a_sole_file_keeps_its_directory_in_place() {
-        let mut layout = Layout::planned(&[]);
+        let mut layout = Layout::planned_paths(
+            &[
+                "src/layout.rs",
+                "src/scene/mod.rs",
+                "docs/a.md",
+                "src/b.md",
+                "docs/guide.md",
+            ],
+            40,
+        );
         let id = layout.add("docs/a.md", 0.0, 0);
         for file in 0..40 {
             layout.add(&format!("other/{file}.rs"), 0.0, 0);
@@ -522,7 +523,16 @@ mod tests {
 
     #[test]
     fn renaming_onto_a_fading_file_keeps_its_directory_in_place() {
-        let mut layout = Layout::planned(&[]);
+        let mut layout = Layout::planned_paths(
+            &[
+                "src/layout.rs",
+                "src/scene/mod.rs",
+                "docs/a.md",
+                "src/b.md",
+                "docs/guide.md",
+            ],
+            40,
+        );
         layout.add("docs/a.md", 0.0, 0);
         let id = layout.add("src/b.md", 0.0, 0);
         for file in 0..40 {
@@ -544,7 +554,16 @@ mod tests {
 
     #[test]
     fn deletion_fades_then_prunes_empty_directories() {
-        let mut layout = Layout::planned(&[]);
+        let mut layout = Layout::planned_paths(
+            &[
+                "src/layout.rs",
+                "src/scene/mod.rs",
+                "docs/a.md",
+                "src/b.md",
+                "docs/guide.md",
+            ],
+            40,
+        );
         let id = layout.add("docs/guide.md", 0.0, 0);
         layout.settle(10, DT);
         layout.remove("docs/guide.md", 0.5, 0);
@@ -559,7 +578,14 @@ mod tests {
 
     #[test]
     fn sibling_directories_separate() {
-        let mut layout = Layout::planned(&[]);
+        let paths: Vec<_> = ["a", "b", "c", "d"]
+            .into_iter()
+            .flat_map(|dir| (0..12).map(move |file| format!("{dir}/{file}.rs")))
+            .collect();
+        let mut layout = Layout::planned_paths(
+            &paths.iter().map(String::as_str).collect::<Vec<_>>(),
+            0,
+        );
         for name in ["a", "b", "c", "d"] {
             for file in 0..12 {
                 layout.add(&format!("{name}/{file}.rs"), 0.0, 0);

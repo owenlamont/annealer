@@ -121,6 +121,7 @@ pub(super) struct Simulation {
     offset: usize,
     total: usize,
     starts: Vec<f32>,
+    plan_starts: Vec<f32>,
     seconds_per_day: f32,
     max_idle_seconds: f32,
     initial: State,
@@ -145,6 +146,19 @@ pub(super) fn event_starts(events: &[Event], rate: f32, idle: f32) -> Vec<f32> {
             now
         })
         .collect()
+}
+
+fn schedule_time(time: f32, current: &[f32], original: &[f32]) -> f32 {
+    let next = current.partition_point(|&start| start <= time);
+    if next == 0 {
+        return time;
+    }
+    let previous = next - 1;
+    if next == current.len() {
+        return original[previous] + time - current[previous];
+    }
+    let fraction = (time - current[previous]) / (current[next] - current[previous]);
+    original[previous] + fraction * (original[next] - original[previous])
 }
 
 impl Simulation {
@@ -207,6 +221,7 @@ impl Simulation {
             events,
             offset: start,
             total,
+            plan_starts: starts.clone(),
             starts,
             seconds_per_day: options.seconds_per_day,
             max_idle_seconds: options.max_idle_seconds,
@@ -265,7 +280,7 @@ impl Simulation {
         }
     }
 
-    fn tick(&mut self) {
+    pub(crate) fn tick_layout(&mut self) {
         let state = &mut self.state;
         state.tick += 1;
         let now = tick_time(state.tick);
@@ -278,8 +293,16 @@ impl Simulation {
             state.next_event += 1;
         }
         let dt = tick_seconds();
-        state.layout.sample_plan(now, dt);
+        let plan_time = schedule_time(now, &self.starts, &self.plan_starts);
+        state.layout.sample_plan(plan_time, dt);
         state.layout.step(dt);
+    }
+
+    fn tick(&mut self) {
+        self.tick_layout();
+        let state = &mut self.state;
+        let now = tick_time(state.tick);
+        let dt = tick_seconds();
         state.pulses.retain(|pulse| now < pulse.end);
         let targets = state.avatar_targets(now);
         for (avatar, target) in state.avatars.iter_mut().zip(targets) {
@@ -656,8 +679,10 @@ impl State {
             .layout
             .files()
             .flat_map(|(_, file)| {
-                let low = self.geometry.file_min * file.presence.max(0.001);
-                let high = self.geometry.file_max * file.presence.max(0.001);
+                let low = self.geometry.file_min
+                    * file.visible_presence(self.layout.dir(file.dir)).max(0.001);
+                let high = self.geometry.file_max
+                    * file.visible_presence(self.layout.dir(file.dir)).max(0.001);
                 [
                     Vec3::new(low.x, high.y, low.z),
                     Vec3::new(low.x, high.y, high.z),
