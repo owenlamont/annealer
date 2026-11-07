@@ -1091,18 +1091,12 @@ fn place_labels(
     chosen
 }
 fn labels(world: &mut World) {
-    let mut camera_query = world
-        .query_filtered::<(Entity, &Camera, &GlobalTransform), With<SceneCamera>>();
-    let Ok((scene_camera, camera, transform)) = camera_query.single(world) else {
+    let mut camera_query =
+        world.query_filtered::<(&Camera, &GlobalTransform), With<SceneCamera>>();
+    let Ok((camera, transform)) = camera_query.single(world) else {
         return;
     };
     let (camera, transform) = (camera.clone(), *transform);
-    let Ok(avatar_camera) = world
-        .query_filtered::<Entity, With<AvatarCamera>>()
-        .single(world)
-    else {
-        return;
-    };
     let playback = world.resource::<Playback>();
     let mut caption = playback.0.caption();
     if let Some(camera) = world.get_resource::<PreviewCamera>() {
@@ -1127,30 +1121,26 @@ fn labels(world: &mut World) {
         &mut Visibility,
         &mut TextColor,
         &mut ZIndex,
-        &mut UiTargetCamera,
     ), With<Label>>();
     let theme = &world.resource::<Palette>().theme;
     let (emphasis_color, landmark_color) = (theme.label_emphasis, theme.label_landmark);
     let mut chosen = chosen.into_iter();
-    for (
-        index,
-        (mut text, mut node, mut visibility, mut color, mut z_index, mut target),
-    ) in query.iter_mut(world).enumerate()
+    for (index, (mut text, mut node, mut visibility, mut color, mut z_index)) in
+        query.iter_mut(world).enumerate()
     {
         if let Some((label, point, _)) = chosen.next() {
-            target.0 = if label.kind == model::LabelKind::Avatar {
-                avatar_camera
-            } else {
-                scene_camera
-            };
-            z_index.0 = i32::try_from(index).expect("label pool fits in i32");
+            z_index.set_if_neq(ZIndex(
+                i32::try_from(index).expect("label pool fits in i32"),
+            ));
             let emphasis = label.kind != model::LabelKind::Landmark;
             let label = label.text;
             if text.0 != label {
                 text.0 = label;
             }
-            node.left = px(point.x);
-            node.top = px(point.y);
+            if node.left != px(point.x) || node.top != px(point.y) {
+                node.left = px(point.x);
+                node.top = px(point.y);
+            }
             let wanted = if emphasis {
                 emphasis_color
             } else {
@@ -1159,9 +1149,9 @@ fn labels(world: &mut World) {
             if color.0 != wanted {
                 color.0 = wanted;
             }
-            *visibility = Visibility::Inherited;
+            visibility.set_if_neq(Visibility::Inherited);
         } else {
-            *visibility = Visibility::Hidden;
+            visibility.set_if_neq(Visibility::Hidden);
         }
     }
     let mut query = world.query_filtered::<&mut Text, With<Caption>>();
@@ -1300,6 +1290,45 @@ mod tests {
             panic!("avatar camera must use the scene projection");
         };
         assert_eq!(projection.fov, 0.8);
+        assert_labels_stay_below_avatars_without_redundant_updates(&mut world, scene);
+    }
+
+    fn assert_labels_stay_below_avatars_without_redundant_updates(
+        world: &mut World,
+        scene: Entity,
+    ) {
+        world.get_mut::<Camera>(scene).unwrap().computed =
+            bevy::camera::ComputedCameraValues {
+                clip_from_view: Mat4::from_scale(Vec3::splat(0.01)),
+                target_info: Some(bevy::camera::RenderTargetInfo {
+                    physical_size: UVec2::new(WIDTH, HEIGHT),
+                    scale_factor: 1.0,
+                }),
+                ..default()
+            };
+        labels(world);
+        let mut label_query = world
+            .query_filtered::<(&Text, &Visibility, &UiTargetCamera), With<Label>>();
+        assert!(label_query.iter(world).any(|(text, visibility, _)| {
+            text.0 == "Portrait" && *visibility == Visibility::Inherited
+        }));
+        for (_, _, target) in label_query.iter(world) {
+            assert_eq!(target.0, scene);
+        }
+        world.clear_trackers();
+        labels(world);
+        let mut changed_labels = world.query_filtered::<Entity, (
+            With<Label>,
+            Or<(
+                Changed<Text>,
+                Changed<Node>,
+                Changed<Visibility>,
+                Changed<TextColor>,
+                Changed<ZIndex>,
+                Changed<UiTargetCamera>,
+            )>,
+        )>();
+        assert_eq!(changed_labels.iter(world).count(), 0);
     }
 
     #[test]
