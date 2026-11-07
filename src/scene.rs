@@ -1090,40 +1090,42 @@ mod tests {
             .resource_mut::<Playback>()
             .0
             .advance_to(45, 60);
-        for (key, caption) in [
-            (KeyCode::BracketRight, "0.25 s/day"),
-            (KeyCode::BracketLeft, "0.50 s/day"),
-        ] {
-            let world = app.world_mut();
-            world.resource_mut::<ButtonInput<KeyCode>>().press(key);
-            world
-                .resource_mut::<Time<Real>>()
-                .update_with_duration(std::time::Duration::ZERO);
-            app.update();
-            assert_eq!(app.world().resource::<Frame>().index, 45);
-            assert!(
-                app.world()
-                    .resource::<Playback>()
-                    .0
-                    .caption()
-                    .contains(caption)
-            );
-            app.world_mut()
-                .resource_mut::<ButtonInput<KeyCode>>()
-                .reset_all();
-        }
+        let seconds = app.world().resource::<Playback>().0.seconds();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::BracketRight);
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .update_with_duration(std::time::Duration::from_millis(100));
+        app.update();
+        assert_eq!(app.world().resource::<Frame>().index, 51);
+        assert_eq!(app.world().resource::<Playback>().0.seconds(), seconds);
+        assert!(
+            app.world()
+                .resource::<Playback>()
+                .0
+                .caption()
+                .contains("0.25 s/day")
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
         app.world_mut()
             .resource_mut::<Time<Real>>()
             .update_with_duration(std::time::Duration::from_secs(30));
         app.update();
         assert_eq!(app.world().resource::<Frame>().index, 0);
         assert_eq!(app.world().resource::<Playback>().0.commit(), 0);
+        assert_eq!(
+            app.world().resource::<Playback>().0.scheduled_starts(),
+            model::event_starts(&crate::timeline::synthetic(), 0.25, 1.0)
+        );
         assert!(
             app.world()
                 .resource::<Playback>()
                 .0
                 .caption()
-                .contains("0.50 s/day")
+                .contains("0.25 s/day")
         );
     }
 

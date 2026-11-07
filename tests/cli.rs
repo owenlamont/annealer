@@ -44,7 +44,10 @@ fn invalid_timing_is_rejected_before_creating_output() {
         ("--fps", "241"),
         ("--seconds-per-day", "0"),
         ("--seconds-per-day", "NaN"),
+        ("--seconds-per-day", "86401"),
+        ("--seconds-per-day", "inf"),
         ("--max-idle-seconds", "0"),
+        ("--max-idle-seconds", "86401"),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_codestrand"))
             .args(["export", ".", flag, value])

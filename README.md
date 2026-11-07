@@ -74,8 +74,9 @@ cargo run --locked --release -- export frames --repository /path/to/repository \
 Without `--repository`, the synthetic history plays, including a move between
 directories, deletions and a 65-file commit. `--start` lays out and settles earlier
 commits before playback; `--commits` limits what plays after it. Preview loops;
-Escape closes the window. The right bracket doubles playback speed; the left bracket
-halves speed. The caption shows the current seconds-per-day rate.
+Escape closes the window. The right bracket halves seconds per day; the left bracket
+doubles seconds per day, within 0.01–86400. Gaps stay between one simulation tick and
+the idle cap. Rate changes stop when no gap would change; the caption shows the rate.
 `--seconds-per-day` defaults to 0.5; timestamps within a day retain their spacing.
 Coincident, reversed or very close timestamps get a 0.05-second minimum gap
 (limited by the idle cap), preserving commit order. `--max-idle-seconds` defaults

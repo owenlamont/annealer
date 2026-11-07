@@ -134,8 +134,8 @@ impl Source {
 
 fn positive_seconds(value: &str) -> Result<f32, String> {
     match value.parse::<f32>() {
-        Ok(seconds) if seconds.is_finite() && seconds >= 0.01 => Ok(seconds),
-        _ => Err("expected seconds of at least 0.01".to_owned()),
+        Ok(seconds) if (0.01..=86_400.0).contains(&seconds) => Ok(seconds),
+        _ => Err("expected seconds between 0.01 and 86400".to_owned()),
     }
 }
 
